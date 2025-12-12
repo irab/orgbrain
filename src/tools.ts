@@ -62,8 +62,14 @@ export const toolHandlers: ToolHandler[] = [
             example: 'diff_versions(from_ref: "v1.0.0", to_ref: "main")',
           },
           visualize: {
-            description: "Generate architecture diagrams",
+            description: "Generate architecture diagrams (ecosystem overview OR single-repo detail)",
             tools: ["generate_diagram", "generate_c4_diagram"],
+            examples: [
+              'generate_c4_diagram() - ecosystem overview of all repos',
+              'generate_c4_diagram(repo: "my-app") - detailed view of repo internals (apps, packages, services)',
+              'generate_c4_diagram(repo: "my-app", level: "context") - high-level system context',
+              'generate_diagram(repo: "my-app") - Mermaid flowchart of repo structure',
+            ],
           },
           explore: {
             description: "Browse repos and refs",

@@ -8,16 +8,29 @@
 #
 # Or use the org bootstrap script:
 #   pnpm add:org-repos <your-github-org>
+#   pnpm add:org-repos <your-github-org> --nips    # For Nostr projects
+#   pnpm add:org-repos <your-github-org> --reset   # Start fresh
 
 version: "1.0"
 cache_dir: .repo-cache
 knowledge_dir: knowledge/extracted
 
+# Optional: customize diagram colors by repo type
+diagram_styles:
+  frontend: "#4CAF50"
+  backend: "#FF9800"
+  infrastructure: "#607D8B"
+  library: "#00BCD4"
+  test: "#9E9E9E"
+  unknown: "#9E9E9E"
+
 repositories:
-  # Frontend application example
+  # ============================================
+  # FRONTEND APPLICATION EXAMPLE
+  # ============================================
   sample-frontend:
     url: https://github.com/example-org/sample-frontend.git
-    description: Example frontend application
+    description: Example frontend application (React/Next.js)
     type: frontend
     language: typescript
     default_branch: main
@@ -28,35 +41,83 @@ repositories:
         pattern: "v*"
         latest: 3
     extractors:
-      - name: nip_usage
-        config:
-          patterns: ["NIP-\\d+", "kind:\\s*\\d+"]
-          file_types: ["ts", "tsx", "js", "md"]
+      - name: monorepo          # Auto-detects if it's a monorepo
       - name: user_flows
         config:
-          ignore: ["**/*.test.*", "**/stories/*"]
+          ignore: ["**/*.test.*", "**/stories/*", "**/__mocks__/*"]
+          limit: 100
       - name: data_flow
+      - name: journey_impact
 
-  # Backend service example
-  sample-backend:
-    url: https://github.com/example-org/sample-backend.git
-    description: Example backend service
-    type: backend
-    language: rust
+  # ============================================
+  # NOSTR PROJECT EXAMPLE
+  # ============================================
+  sample-nostr-client:
+    url: https://github.com/example-org/sample-nostr-client.git
+    description: Example Nostr client application
+    type: frontend
+    language: dart
     default_branch: main
     enabled: true
     track:
       branches: [main]
+      tags:
+        pattern: "v*"
+        latest: 5
     extractors:
       - name: nip_usage
         config:
-          file_types: ["rs", "md"]
+          patterns: ["NIP-\\d+", "nip\\d+", "kind:\\s*\\d+", "Kind\\."]
+          file_types: ["dart", "ts", "js", "rs", "md"]
+      - name: user_flows
       - name: data_flow
+      - name: journey_impact
 
-  # Infrastructure repo example
+  # ============================================
+  # BACKEND SERVICE EXAMPLE
+  # ============================================
+  sample-backend:
+    url: https://github.com/example-org/sample-backend.git
+    description: Example backend API service
+    type: backend
+    language: go
+    default_branch: main
+    enabled: true
+    track:
+      branches: [main]
+      tags:
+        pattern: "v*"
+        latest: 5
+    extractors:
+      - name: data_flow
+      - name: journey_impact
+
+  # ============================================
+  # TURBOREPO / MONOREPO EXAMPLE
+  # ============================================
+  sample-monorepo:
+    url: https://github.com/example-org/sample-monorepo.git
+    description: Example Turborepo with multiple apps and packages
+    type: frontend
+    language: typescript
+    default_branch: main
+    enabled: true
+    track:
+      branches: [main, develop]
+    extractors:
+      - name: monorepo          # Detects workspace structure, packages, internal deps
+      - name: user_flows
+        config:
+          ignore: ["**/node_modules/**", "**/*.test.*", "**/*.spec.*"]
+      - name: data_flow
+      - name: journey_impact
+
+  # ============================================
+  # INFRASTRUCTURE REPO EXAMPLE
+  # ============================================
   sample-infra:
     url: https://github.com/example-org/sample-infra.git
-    description: Infrastructure as Code
+    description: Infrastructure as Code (Terraform + Kubernetes)
     type: infrastructure
     language: hcl
     default_branch: main
@@ -66,17 +127,40 @@ repositories:
     extractors:
       - name: kubernetes
         config:
-          paths: ["k8s/", "manifests/"]
+          paths: ["k8s/", "manifests/", "argocd/", "helm/"]
+          # resource_types: ["Deployment", "Service", "Ingress"]  # Optional filter
       - name: terraform
+      - name: journey_impact
 
-  # Disabled repo example (will be skipped during extraction)
+  # ============================================
+  # LIBRARY / PACKAGE EXAMPLE
+  # ============================================
+  sample-sdk:
+    url: https://github.com/example-org/sample-sdk.git
+    description: Shared SDK library
+    type: library
+    language: typescript
+    default_branch: main
+    enabled: true
+    track:
+      branches: [main]
+      tags:
+        pattern: "v*"
+        latest: 10
+    extractors:
+      - name: data_flow
+      - name: journey_impact
+
+  # ============================================
+  # DISABLED REPO EXAMPLE
+  # ============================================
   legacy-app:
     url: https://github.com/example-org/legacy-app.git
-    description: Legacy application (disabled)
+    description: Legacy application (disabled - not extracted)
     type: frontend
     language: javascript
     default_branch: master
-    enabled: false  # Set to false to skip this repo
+    enabled: false              # Set to false to skip this repo
     track:
       branches: [master]
     extractors:

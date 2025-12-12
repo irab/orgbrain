@@ -123,12 +123,24 @@ export class GitManager {
 
   async listFilesAtRef(repoPath: string, ref: string, pathPattern?: string): Promise<string[]> {
     const args = ["ls-tree", "-r", "--name-only", ref];
-    if (pathPattern) {
-      args.push("--", pathPattern);
-    }
 
     const output = await this.git(args, repoPath);
-    return output.split("\n").filter(Boolean);
+    let files = output.split("\n").filter(Boolean);
+
+    // Filter by pattern if provided (supports glob-like patterns)
+    if (pathPattern) {
+      // Convert glob pattern to regex: *.tf -> \.tf$, **/*.yaml -> .*\.yaml$
+      const regexPattern = pathPattern
+        .replace(/\./g, "\\.")           // Escape dots
+        .replace(/\*\*/g, ".*")          // ** matches any path
+        .replace(/\*/g, "[^/]*")         // * matches within segment
+        .replace(/\?/g, ".");            // ? matches single char
+      
+      const regex = new RegExp(regexPattern + "$");
+      files = files.filter((f) => regex.test(f));
+    }
+
+    return files;
   }
 
   async grepAtRef(

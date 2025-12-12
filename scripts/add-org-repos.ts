@@ -7,6 +7,7 @@
  *
  * Options:
  *   --interactive, -i   Interactively select which repos to include/exclude
+ *   --reset             Clear existing repos before adding (start fresh)
  *   --dry-run           Preview changes without writing
  *   --ssh               Use SSH URLs (default)
  *   --https             Use HTTPS URLs
@@ -14,6 +15,9 @@
  *   --include-archived  Include archived repos
  *   --filter <regex>    Only include repos matching pattern
  *   --exclude <regex>   Exclude repos matching pattern
+ *   --nips              Include NIP extractor (for Nostr repos)
+ *   --extractors <list> Comma-separated list of extractors to use
+ *                       (e.g., --extractors user_flows,data_flow,kubernetes)
  */
 
 import { execSync } from "child_process";
@@ -72,6 +76,9 @@ function parseArgs(args: string[]): {
   includeForks: boolean;
   includeArchived: boolean;
   interactive: boolean;
+  reset: boolean;
+  includeNips: boolean;
+  extractors?: string[];
   filter?: RegExp;
   exclude?: RegExp;
 } {
@@ -82,6 +89,7 @@ Usage: pnpm add:org-repos <org-name> [options]
 
 Options:
   --interactive, -i   Interactively select which repos to include/exclude
+  --reset             Clear existing repos before adding (start fresh)
   --dry-run           Preview changes without writing
   --ssh               Use SSH URLs (default)
   --https             Use HTTPS URLs
@@ -89,6 +97,10 @@ Options:
   --include-archived  Include archived repos
   --filter <regex>    Only include repos matching pattern
   --exclude <regex>   Exclude repos matching pattern
+  --nips              Include NIP extractor (for Nostr repos)
+  --extractors <list> Comma-separated extractors (e.g., user_flows,data_flow)
+
+Available extractors: nip_usage, user_flows, data_flow, kubernetes, terraform, journey_impact
 `);
     process.exit(1);
   }
@@ -98,6 +110,9 @@ Options:
   let includeForks = false;
   let includeArchived = false;
   let interactive = false;
+  let reset = false;
+  let includeNips = false;
+  let extractors: string[] | undefined;
   let filter: RegExp | undefined;
   let exclude: RegExp | undefined;
 
@@ -107,6 +122,9 @@ Options:
       case "--interactive":
       case "-i":
         interactive = true;
+        break;
+      case "--reset":
+        reset = true;
         break;
       case "--dry-run":
         dryRun = true;
@@ -123,6 +141,12 @@ Options:
       case "--include-archived":
         includeArchived = true;
         break;
+      case "--nips":
+        includeNips = true;
+        break;
+      case "--extractors":
+        extractors = args[++i].split(",").map((e) => e.trim());
+        break;
       case "--filter":
         filter = new RegExp(args[++i]);
         break;
@@ -135,7 +159,7 @@ Options:
     }
   }
 
-  return { org, dryRun, useSsh, includeForks, includeArchived, interactive, filter, exclude };
+  return { org, dryRun, useSsh, includeForks, includeArchived, interactive, reset, includeNips, extractors, filter, exclude };
 }
 
 function listOrgRepos(org: string): GHRepo[] {
@@ -193,20 +217,63 @@ function inferRepoType(repo: GHRepo): string {
   return "unknown";
 }
 
-function buildRepoConfig(repo: GHRepo, useSsh: boolean, enabled = true): RepoConfig {
-  const extractorDefaults: RepoConfig["extractors"] = [
-    { name: "nip_usage", config: { patterns: ["NIP-\\d+", "kind:\\s*\\d+"], file_types: ["*"] } },
-    { name: "user_flows" },
-    { name: "data_flow" },
-    { name: "kubernetes" },
-    { name: "terraform" },
-    { name: "journey_impact" },
-  ];
+function buildRepoConfig(
+  repo: GHRepo, 
+  useSsh: boolean, 
+  enabled = true,
+  options: { includeNips?: boolean; extractors?: string[] } = {}
+): RepoConfig {
+  const repoType = inferRepoType(repo);
+  
+  // Smart extractor selection based on repo type
+  const extractors: RepoConfig["extractors"] = [];
+  
+  // Determine which extractors to include
+  const includeNips = options.includeNips ?? false; // Default: no NIPs unless explicitly requested
+  const customExtractors = options.extractors;
+  
+  if (customExtractors) {
+    // Use explicitly specified extractors
+    for (const name of customExtractors) {
+      if (name === "nip_usage") {
+        extractors.push({ name: "nip_usage", config: { patterns: ["NIP-\\d+", "kind:\\s*\\d+"], file_types: ["*"] } });
+      } else {
+        extractors.push({ name });
+      }
+    }
+  } else {
+    // Smart defaults based on repo type
+    if (includeNips) {
+      extractors.push({ name: "nip_usage", config: { patterns: ["NIP-\\d+", "kind:\\s*\\d+"], file_types: ["*"] } });
+    }
+    
+    // Always try monorepo detection (it auto-skips if not a monorepo)
+    extractors.push({ name: "monorepo" });
+    
+    if (repoType === "frontend") {
+      extractors.push({ name: "user_flows" });
+      extractors.push({ name: "data_flow" });
+    } else if (repoType === "backend") {
+      extractors.push({ name: "data_flow" });
+    } else if (repoType === "infrastructure") {
+      extractors.push({ name: "kubernetes" });
+      extractors.push({ name: "terraform" });
+    } else {
+      // Unknown type - add common extractors
+      extractors.push({ name: "user_flows" });
+      extractors.push({ name: "data_flow" });
+      extractors.push({ name: "kubernetes" });
+      extractors.push({ name: "terraform" });
+    }
+    
+    // Always include journey_impact (lightweight, works on any repo with docs)
+    extractors.push({ name: "journey_impact" });
+  }
 
   const config: RepoConfig = {
     url: useSsh ? repo.sshUrl : repo.url,
     description: repo.description || `Repository: ${repo.name}`,
-    type: inferRepoType(repo),
+    type: repoType,
     language: repo.primaryLanguage?.name || "unknown",
     default_branch: repo.defaultBranchRef?.name || "main",
     private: repo.isPrivate || undefined,
@@ -214,7 +281,7 @@ function buildRepoConfig(repo: GHRepo, useSsh: boolean, enabled = true): RepoCon
       branches: [repo.defaultBranchRef?.name || "main"],
       tags: { pattern: "v*", latest: 5 },
     },
-    extractors: extractorDefaults,
+    extractors,
   };
 
   // Only add enabled: false if explicitly disabled
@@ -324,7 +391,7 @@ async function interactiveSelect(
 }
 
 async function main() {
-  const { org, dryRun, useSsh, includeForks, includeArchived, interactive, filter, exclude } = parseArgs(
+  const { org, dryRun, useSsh, includeForks, includeArchived, interactive, reset, includeNips, extractors, filter, exclude } = parseArgs(
     process.argv.slice(2)
   );
   
@@ -345,6 +412,15 @@ async function main() {
   console.log(`${repos.length} repositories after filtering.\n`);
 
   const config = await loadConfigFile();
+
+  // Clear existing repos if --reset flag is used
+  if (reset) {
+    const existingCount = Object.keys(config.repositories).length;
+    if (existingCount > 0) {
+      console.log(`🗑️  Clearing ${existingCount} existing repositories (--reset)`);
+      config.repositories = {};
+    }
+  }
   
   let enabledRepos: Set<string>;
   let disabledRepos: Set<string>;
@@ -374,7 +450,7 @@ async function main() {
   // Build config
   for (const repo of repos) {
     const isEnabled = enabledRepos.has(repo.name);
-    const cfg = buildRepoConfig(repo, useSsh, isEnabled);
+    const cfg = buildRepoConfig(repo, useSsh, isEnabled, { includeNips, extractors });
     config.repositories[repo.name] = cfg;
   }
 

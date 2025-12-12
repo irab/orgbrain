@@ -2,6 +2,7 @@
 import "./app/nip-usage.js";
 import "./app/user-flows.js";
 import "./app/data-flow.js";
+import "./app/monorepo.js";
 import "./infra/terraform.js";
 import "./infra/kubernetes.js";
 import "./architecture/journey-impact.js";

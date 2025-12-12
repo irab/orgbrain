@@ -44,6 +44,12 @@ The server reads `MCP_CONFIG` (defaults to `config/repos.yaml`).
 MCP_CONFIG=path/to/custom.yaml pnpm dev
 ```
 
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_CONFIG` | `config/repos.yaml` | Path to configuration file |
+
 ## Using from an MCP client
 
 The server uses stdio transport — MCP clients spawn it as a subprocess.
@@ -95,41 +101,246 @@ npx @modelcontextprotocol/cli@latest call \
 ```
 
 ## Configuration
-`config/example.repos.yaml` demonstrates the expected shape (copy to `config/repos.yaml` to edit):
+
+Copy `config/example.repos.yaml` to `config/repos.yaml` and customize.
+
+### Global Settings
 
 ```yaml
 version: "1.0"
-cache_dir: .repo-cache
-knowledge_dir: knowledge/extracted
-repositories:
-  sample-frontend:
-    url: https://github.com/example-org/sample-frontend.git
-    description: Example frontend app
-    type: frontend
-    language: typescript
-    default_branch: main
-    track:
-      branches: [main]
-    extractors:
-      - name: nip_usage
-        config:
-          patterns: ["NIP-\\d+", "kind:\\s*\\d+"]
-          file_types: ["ts", "js", "md"]
-      - name: user_flows
-      - name: data_flow
+cache_dir: .repo-cache           # Where git repos are cloned
+knowledge_dir: knowledge/extracted  # Where extracted data is stored
+
+# Optional: customize diagram colors by repo type
+diagram_styles:
+  frontend: "#4CAF50"
+  backend: "#FF9800"
+  infrastructure: "#607D8B"
 ```
 
-Add more repos under `repositories:` and tune extractor configs per repo.
+### Repository Configuration
 
-## Knowledge extraction
-- `pnpm build:knowledge` — clone/fetch repos, run all configured extractors, write to `knowledge/extracted/`.
-- `pnpm build:knowledge --repo <name>` — only one repo.
-- `pnpm build:knowledge --ref <branch-or-tag>` — only one ref.
-- `pnpm build:knowledge --force` — rebuild even if fresh.
-- `pnpm build:knowledge --list` — list extracted versions (highlights disabled repos).
-- `pnpm build:knowledge --prune` — **remove stale data** from disabled or removed repos.
-- `pnpm add:org-repos <org>` — populate `config/repos.yaml` from a GitHub org (requires `gh` auth).
-- `pnpm add:org-repos <org> -i` — **interactive mode**: select which repos to enable/disable.
+```yaml
+repositories:
+  my-repo:
+    # Required fields
+    url: https://github.com/org/repo.git  # Or git@github.com:org/repo.git
+    description: "What this repo does"
+    type: frontend                         # frontend | backend | infrastructure | library | documentation | unknown
+    language: typescript
+    default_branch: main
+
+    # Optional fields
+    enabled: true                          # Set to false to skip this repo
+    private: true                          # Informational flag
+
+    # What refs to track
+    track:
+      branches: [main, develop]            # Extract these branches
+      tags:
+        pattern: "v*"                      # Glob pattern for tags
+        latest: 5                          # Only extract N most recent matching tags
+
+    # Extractors to run
+    extractors:
+      - name: extractor_name
+        config: { ... }                    # Extractor-specific config
+```
+
+### Extractor Configurations
+
+#### `nip_usage` - Nostr NIP Detection
+```yaml
+- name: nip_usage
+  config:
+    patterns: ["NIP-\\d+", "kind:\\s*\\d+"]  # Regex patterns to search
+    file_types: ["ts", "js", "rs", "dart", "md"]  # File extensions to scan
+```
+
+#### `user_flows` - UI Screens & Navigation
+```yaml
+- name: user_flows
+  config:
+    ignore: ["**/*.test.*", "**/stories/*"]  # Glob patterns to skip
+    limit: 50                                 # Max files to process
+```
+
+#### `data_flow` - Service Dependencies
+```yaml
+- name: data_flow
+  # No config options - auto-detects /services/ folders
+```
+
+#### `monorepo` - Workspace Structure
+```yaml
+- name: monorepo
+  # No config options - auto-detects turbo.json, pnpm-workspace.yaml, etc.
+```
+
+#### `kubernetes` - K8s Manifests
+```yaml
+- name: kubernetes
+  config:
+    paths: ["k8s/", "manifests/", "deploy/"]  # Directories to scan
+    resource_types: ["Deployment", "Service", "Ingress"]  # Filter by kind
+```
+
+#### `terraform` - Infrastructure as Code
+```yaml
+- name: terraform
+  # No config options - scans all *.tf files
+```
+
+#### `journey_impact` - Documentation Mapping
+```yaml
+- name: journey_impact
+  # No config options - scans docs/, flows/, journey files
+```
+
+### Example Configurations
+
+#### Nostr Project
+```yaml
+nostr-client:
+  url: git@github.com:org/nostr-client.git
+  type: frontend
+  language: dart
+  default_branch: main
+  track:
+    branches: [main]
+    tags: { pattern: "v*", latest: 3 }
+  extractors:
+    - name: nip_usage
+      config:
+        patterns: ["NIP-\\d+", "kind:\\s*\\d+"]
+        file_types: ["dart", "md"]
+    - name: user_flows
+    - name: data_flow
+    - name: journey_impact
+```
+
+#### Turborepo Monorepo
+```yaml
+my-monorepo:
+  url: git@github.com:org/my-monorepo.git
+  type: frontend
+  language: typescript
+  default_branch: main
+  track:
+    branches: [main, develop]
+  extractors:
+    - name: monorepo
+    - name: user_flows
+      config:
+        ignore: ["**/node_modules/**", "**/*.test.*"]
+    - name: data_flow
+    - name: journey_impact
+```
+
+#### Infrastructure Repo
+```yaml
+platform-infra:
+  url: git@github.com:org/platform-infra.git
+  type: infrastructure
+  language: hcl
+  default_branch: main
+  track:
+    branches: [main]
+  extractors:
+    - name: kubernetes
+      config:
+        paths: ["k8s/", "argocd/", "helm/"]
+    - name: terraform
+    - name: journey_impact
+```
+
+#### Backend API
+```yaml
+api-service:
+  url: git@github.com:org/api-service.git
+  type: backend
+  language: go
+  default_branch: main
+  track:
+    branches: [main]
+    tags: { pattern: "v*", latest: 5 }
+  extractors:
+    - name: data_flow
+    - name: kubernetes
+    - name: journey_impact
+```
+
+## CLI Commands
+
+### Knowledge Extraction
+
+```bash
+# Extract all enabled repos
+pnpm build:knowledge
+
+# Extract specific repo
+pnpm build:knowledge --repo my-app
+
+# Extract specific ref (branch or tag)
+pnpm build:knowledge --repo my-app --ref v1.0.0
+
+# Force re-extraction (ignore cache)
+pnpm build:knowledge --force
+
+# List extracted knowledge
+pnpm build:knowledge --list
+
+# Remove stale data from disabled/removed repos
+pnpm build:knowledge --prune
+
+# Set max age before re-extraction (seconds)
+pnpm build:knowledge --max-age 3600
+```
+
+### Adding Repos from GitHub Org
+
+```bash
+# Add all repos from org
+pnpm add:org-repos <org-name>
+
+# Interactive mode - select which repos to include
+pnpm add:org-repos <org-name> -i
+
+# Start fresh - clear existing config first
+pnpm add:org-repos <org-name> --reset
+
+# Include NIP extractor (for Nostr projects)
+pnpm add:org-repos <org-name> --nips
+
+# Specify exact extractors
+pnpm add:org-repos <org-name> --extractors user_flows,data_flow,kubernetes
+
+# Use HTTPS URLs instead of SSH
+pnpm add:org-repos <org-name> --https
+
+# Include forks and archived repos
+pnpm add:org-repos <org-name> --include-forks --include-archived
+
+# Filter repos by name
+pnpm add:org-repos <org-name> --filter "^api-"
+pnpm add:org-repos <org-name> --exclude "test|demo"
+
+# Preview without saving
+pnpm add:org-repos <org-name> --dry-run
+```
+
+### Extractor Auto-Selection
+
+When using `add:org-repos`, extractors are auto-selected based on repo type:
+
+| Repo Type | Extractors |
+|-----------|------------|
+| Frontend | `monorepo`, `user_flows`, `data_flow`, `journey_impact` |
+| Backend | `monorepo`, `data_flow`, `journey_impact` |
+| Infrastructure | `monorepo`, `kubernetes`, `terraform`, `journey_impact` |
+| Unknown | `monorepo`, `user_flows`, `data_flow`, `kubernetes`, `terraform`, `journey_impact` |
+
+Use `--nips` to add `nip_usage` extractor, or `--extractors` for full control.
 
 > **Note:** When you disable a repo in config, its extracted data remains until you run `--prune`. The MCP server automatically filters out disabled repos from query results.
 
@@ -147,12 +358,37 @@ This shows a checkbox UI where you can:
 
 Repos marked as disabled get `enabled: false` in the config and are skipped during extraction.
 
-Extractors live in `src/extractors/` and register themselves on import via `registerExtractor`. Included: `nip_usage`, `user_flows`, `data_flow`, `kubernetes`, `terraform`, and `journey_impact`.
+Extractors live in `src/extractors/` and register themselves on import via `registerExtractor`. Included:
+- `nip_usage` - Nostr NIP references and event kinds
+- `user_flows` - UI screens and navigation
+- `data_flow` - Service dependencies and HTTP calls
+- `monorepo` - Turborepo/pnpm/npm workspace structure, packages, internal deps
+- `kubernetes` - K8s manifests, ArgoCD apps, services
+- `terraform` - TF resources, modules, providers
+- `journey_impact` - Journey docs to screens/services mapping
+
+## MCP Resources
+
+The server exposes knowledge files as MCP Resources that clients can browse and read directly:
+
+| Resource URI | Description |
+|--------------|-------------|
+| `knowledge://index` | Index of all available knowledge |
+| `knowledge://extracted/{repo}/{ref}/{extractor}` | Extracted data (e.g., `knowledge://extracted/my-app/branch-main/user_flows`) |
+| `knowledge://static/{path}` | Static knowledge files (markdown, matrices) |
+
+**Example URIs:**
+```
+knowledge://index
+knowledge://extracted/example-repo/branch-main/user_flows
+knowledge://extracted/example-repo/branch-main/terraform
+knowledge://static/matrices/nip-usage.json
+```
 
 ## Tools
 Tools are registered in `src/index.ts` from two bundles:
 - Legacy/utility (`src/tools.ts`): `health_check`, `search_knowledge`, `list_knowledge`, `get_resource`, `get_nip_details`, `find_nip_in_extracted`.
-- Version-aware (`src/tools-v2.ts`): `list_repos`, `list_refs`, `query_nips`, `query_flows`, `query_data_flow`, `query_infra`, `compare_versions`, `diff_versions`, `extract_ref`, `extract_all`, `generate_diagram`, `generate_c4_diagram`.
+- Version-aware (`src/tools-v2.ts`): `list_repos`, `list_refs`, `query_nips`, `query_flows`, `query_monorepos`, `query_data_flow`, `query_infra`, `compare_versions`, `diff_versions`, `extract_ref`, `extract_all`, `generate_diagram`, `generate_c4_diagram`.
 
 ### On-Demand Extraction
 The MCP client can trigger extraction directly without running the CLI:

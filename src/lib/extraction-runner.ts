@@ -124,6 +124,27 @@ export class ExtractionRunner {
       const startTime = Date.now();
 
       try {
+        // Auto-detect monorepo and add extractor if not already configured
+        let extractors = [...repoConfig.extractors];
+        const hasMonorepoExtractor = extractors.some((e) => e.name === "monorepo");
+        
+        if (!hasMonorepoExtractor) {
+          const files = await this.gitManager.listFilesAtRef(repoPath, name);
+          const isMonorepo = files.some((f) =>
+            f === "turbo.json" ||
+            f === "pnpm-workspace.yaml" ||
+            f === "nx.json" ||
+            f === "lerna.json" ||
+            f.match(/^packages\/[^/]+\/package\.json$/) ||
+            f.match(/^apps\/[^/]+\/package\.json$/)
+          );
+          
+          if (isMonorepo) {
+            console.log(`  📦 Auto-detected monorepo structure`);
+            extractors = [{ name: "monorepo" }, ...extractors];
+          }
+        }
+
         const results = await runExtractors(
           {
             repoName,
@@ -132,7 +153,7 @@ export class ExtractionRunner {
             refType: type,
             gitManager: this.gitManager,
           },
-          repoConfig.extractors
+          extractors
         );
 
         let sha: string | undefined;
