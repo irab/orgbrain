@@ -1,0 +1,33 @@
+{
+  "name": "orgbrain-mcp",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "packageManager": "pnpm@9.15.1",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "inspect": "npx @modelcontextprotocol/inspector dist/index.js",
+    "build:knowledge": "tsx scripts/build-knowledge.ts",
+    "build:knowledge:force": "tsx scripts/build-knowledge.ts --force",
+    "list:knowledge": "tsx scripts/build-knowledge.ts --list",
+    "add:org-repos": "tsx scripts/add-org-repos.ts"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^8.0.2",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "glob": "^10.3.10",
+    "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/inspector": "^0.5.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

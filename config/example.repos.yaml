@@ -1,0 +1,83 @@
+# Example configuration for OrgBrain MCP Server
+# Copy to config/repos.yaml and customize for your organization
+#
+# Quick start:
+#   cp config/example.repos.yaml config/repos.yaml
+#   # Edit repos.yaml with your repos
+#   pnpm build:knowledge
+#
+# Or use the org bootstrap script:
+#   pnpm add:org-repos <your-github-org>
+
+version: "1.0"
+cache_dir: .repo-cache
+knowledge_dir: knowledge/extracted
+
+repositories:
+  # Frontend application example
+  sample-frontend:
+    url: https://github.com/example-org/sample-frontend.git
+    description: Example frontend application
+    type: frontend
+    language: typescript
+    default_branch: main
+    enabled: true
+    track:
+      branches: [main, develop]
+      tags:
+        pattern: "v*"
+        latest: 3
+    extractors:
+      - name: nip_usage
+        config:
+          patterns: ["NIP-\\d+", "kind:\\s*\\d+"]
+          file_types: ["ts", "tsx", "js", "md"]
+      - name: user_flows
+        config:
+          ignore: ["**/*.test.*", "**/stories/*"]
+      - name: data_flow
+
+  # Backend service example
+  sample-backend:
+    url: https://github.com/example-org/sample-backend.git
+    description: Example backend service
+    type: backend
+    language: rust
+    default_branch: main
+    enabled: true
+    track:
+      branches: [main]
+    extractors:
+      - name: nip_usage
+        config:
+          file_types: ["rs", "md"]
+      - name: data_flow
+
+  # Infrastructure repo example
+  sample-infra:
+    url: https://github.com/example-org/sample-infra.git
+    description: Infrastructure as Code
+    type: infrastructure
+    language: hcl
+    default_branch: main
+    enabled: true
+    track:
+      branches: [main]
+    extractors:
+      - name: kubernetes
+        config:
+          paths: ["k8s/", "manifests/"]
+      - name: terraform
+
+  # Disabled repo example (will be skipped during extraction)
+  legacy-app:
+    url: https://github.com/example-org/legacy-app.git
+    description: Legacy application (disabled)
+    type: frontend
+    language: javascript
+    default_branch: master
+    enabled: false  # Set to false to skip this repo
+    track:
+      branches: [master]
+    extractors:
+      - name: user_flows

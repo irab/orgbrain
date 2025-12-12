@@ -1,0 +1,14 @@
+node_modules
+dist
+.DS_Store
+.env
+coverage
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store
+.repo-cache
+knowledge/extracted
+config/repos.yaml
+.cursor/
