@@ -325,15 +325,9 @@ async function runConnectOrg(job: Job, options: ConnectOrgOptions): Promise<void
     // Step 3: Update config
     const config = await loadConfigFile();
 
-    // Remove existing repos from this org (escape org name for regex safety)
-    const orgUrlPattern = new RegExp(`github\\.com[:/]${escapeRegex(org)}/`, "i");
-    let removed = 0;
-    for (const [repoName, repoConfig] of Object.entries(config.repositories)) {
-      if (orgUrlPattern.test(repoConfig.url)) {
-        delete config.repositories[repoName];
-        removed++;
-      }
-    }
+    // Clear all existing repos - connect_org gives a fresh start
+    const removed = Object.keys(config.repositories).length;
+    config.repositories = {};
 
     // Add repos
     let added = 0;
