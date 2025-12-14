@@ -2,13 +2,14 @@
  * Organization management tools - connect GitHub orgs
  */
 
-import { execSync } from "child_process";
+import { spawn } from "child_process";
 import { promises as fs } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import YAML from "yaml";
 import { ToolHandler, safeJson } from "./shared.js";
 import { clearConfigCache } from "../lib/config-loader.js";
+import { createJob, getJob, updateJob, listJobs, listActiveJobs, type Job } from "../lib/job-manager.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -172,11 +173,188 @@ async function saveConfigFile(config: Config): Promise<void> {
   await fs.writeFile(CONFIG_PATH, YAML.stringify(config));
 }
 
+/**
+ * Fetch repos from GitHub using gh CLI (async via spawn)
+ */
+function fetchGHRepos(org: string): Promise<GHRepo[]> {
+  return new Promise((resolve, reject) => {
+    const args = [
+      "repo",
+      "list",
+      org,
+      "--limit",
+      "1000",
+      "--json",
+      "name,description,sshUrl,defaultBranchRef,primaryLanguage,isPrivate,isFork,isArchived",
+    ];
+
+    const proc = spawn("gh", args);
+    let stdout = "";
+    let stderr = "";
+
+    proc.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    proc.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    proc.on("close", (code) => {
+      if (code !== 0) {
+        if (stderr.includes("not logged in")) {
+          reject(new Error("Not logged in to GitHub CLI. Run 'gh auth login' first."));
+        } else if (stderr.includes("Could not resolve")) {
+          reject(new Error(`Organization '${org}' not found or not accessible.`));
+        } else {
+          reject(new Error(`gh command failed: ${stderr || "Unknown error"}`));
+        }
+        return;
+      }
+
+      try {
+        const repos = JSON.parse(stdout) as GHRepo[];
+        resolve(repos);
+      } catch {
+        reject(new Error(`Failed to parse gh output: ${stdout.slice(0, 200)}`));
+      }
+    });
+
+    proc.on("error", (err) => {
+      reject(new Error(`Failed to spawn gh: ${err.message}`));
+    });
+  });
+}
+
+interface ConnectOrgOptions {
+  org: string;
+  includeForks: boolean;
+  includeArchived: boolean;
+  includeNips: boolean;
+  filterPattern?: string;
+  excludePattern?: string;
+}
+
+/**
+ * Core logic for connecting an org - runs as background job
+ */
+async function runConnectOrg(job: Job, options: ConnectOrgOptions): Promise<void> {
+  const { org, includeForks, includeArchived, includeNips, filterPattern, excludePattern } = options;
+
+  try {
+    updateJob(job.id, {
+      status: "running",
+      progress: { current: 0, total: 4, message: "Fetching repos from GitHub..." },
+    });
+
+    // Step 1: Fetch repos
+    let repos: GHRepo[];
+    try {
+      repos = await fetchGHRepos(org);
+    } catch (error) {
+      updateJob(job.id, {
+        status: "failed",
+        error: (error as Error).message,
+        completedAt: new Date(),
+      });
+      return;
+    }
+
+    const initialCount = repos.length;
+
+    updateJob(job.id, {
+      progress: { current: 1, total: 4, message: `Fetched ${initialCount} repos, filtering...` },
+    });
+
+    // Step 2: Apply filters
+    const ORG_META_REPOS = [".github", "profile", ".github-private"];
+    const filter = filterPattern ? new RegExp(filterPattern) : undefined;
+    const exclude = excludePattern ? new RegExp(excludePattern) : undefined;
+
+    repos = repos.filter((repo) => {
+      if (!includeForks && repo.isFork) return false;
+      if (!includeArchived && repo.isArchived) return false;
+      if (ORG_META_REPOS.includes(repo.name)) return false;
+      if (filter && !filter.test(repo.name)) return false;
+      if (exclude && exclude.test(repo.name)) return false;
+      return true;
+    });
+
+    updateJob(job.id, {
+      progress: { current: 2, total: 4, message: `${repos.length} repos after filters, updating config...` },
+    });
+
+    // Step 3: Update config
+    const config = await loadConfigFile();
+
+    // Remove existing repos from this org
+    const orgUrlPattern = new RegExp(`github\\.com[:/]${org}/`, "i");
+    let removed = 0;
+    for (const [repoName, repoConfig] of Object.entries(config.repositories)) {
+      if (orgUrlPattern.test(repoConfig.url)) {
+        delete config.repositories[repoName];
+        removed++;
+      }
+    }
+
+    // Add repos
+    let added = 0;
+    let disabled = 0;
+
+    for (const repo of repos) {
+      const repoConfig = buildRepoConfig(repo, { includeNips });
+      config.repositories[repo.name] = repoConfig;
+      added++;
+
+      if (repoConfig.enabled === false) {
+        disabled++;
+      }
+    }
+
+    updateJob(job.id, {
+      progress: { current: 3, total: 4, message: "Saving config..." },
+    });
+
+    // Step 4: Save
+    await saveConfigFile(config);
+    clearConfigCache();
+
+    updateJob(job.id, {
+      status: "completed",
+      progress: { current: 4, total: 4, message: "Done" },
+      result: {
+        org,
+        summary: {
+          fetched: initialCount,
+          afterFilters: repos.length,
+          removed,
+          added,
+          autoDisabled: disabled,
+          totalRepos: Object.keys(config.repositories).length,
+        },
+        message: `Connected ${org}! Removed ${removed} old repos, added ${added} new.${disabled > 0 ? ` ${disabled} test/demo repos auto-disabled.` : ""}`,
+        nextSteps: [
+          "Run extract_all to extract knowledge from all enabled repos",
+          "Use list_repos to see all connected repositories",
+          "Use generate_diagram to visualize the architecture",
+        ],
+      },
+      completedAt: new Date(),
+    });
+  } catch (error) {
+    updateJob(job.id, {
+      status: "failed",
+      error: (error as Error).message,
+      completedAt: new Date(),
+    });
+  }
+}
+
 export const orgTools: ToolHandler[] = [
   {
     name: "connect_org",
     description:
-      "Connect a GitHub organization - fetches all repos and adds them to config. Requires GitHub CLI (gh) to be authenticated.",
+      "Connect a GitHub organization - fetches all repos and adds them to config. Runs as a background job; use job_status to check progress. Requires GitHub CLI (gh) to be authenticated.",
     schema: {
       type: "object",
       properties: {
@@ -215,98 +393,77 @@ export const orgTools: ToolHandler[] = [
       const filterPattern = args.filter as string | undefined;
       const excludePattern = args.exclude as string | undefined;
 
-      // Fetch repos using gh CLI
-      let repos: GHRepo[];
-      try {
-        const result = execSync(
-          `gh repo list ${org} --limit 1000 --json name,description,sshUrl,defaultBranchRef,primaryLanguage,isPrivate,isFork,isArchived`,
-          { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 }
-        );
-        repos = JSON.parse(result) as GHRepo[];
-      } catch (error) {
-        const err = error as Error & { stderr?: string };
-        if (err.stderr?.includes("not logged in")) {
+      // Create background job
+      const job = createJob(`connect_org:${org}`);
+
+      // Start the work in the background (don't await)
+      runConnectOrg(job, {
+        org,
+        includeForks,
+        includeArchived,
+        includeNips,
+        filterPattern,
+        excludePattern,
+      });
+
+      return safeJson({
+        status: "started",
+        jobId: job.id,
+        message: `Background job started for connecting ${org}. Use job_status(jobId: "${job.id}") to check progress.`,
+      });
+    },
+  },
+  {
+    name: "job_status",
+    description: "Check the status of a background job, or list all recent jobs if no jobId provided.",
+    schema: {
+      type: "object",
+      properties: {
+        jobId: {
+          type: "string",
+          description: "Job ID to check. If omitted, lists all recent jobs.",
+        },
+      },
+    },
+    handler: async (args) => {
+      const jobId = args.jobId as string | undefined;
+
+      if (jobId) {
+        const job = getJob(jobId);
+        if (!job) {
           return safeJson({
-            error: "Not logged in to GitHub CLI. Run 'gh auth login' first.",
+            error: `Job "${jobId}" not found`,
+            activeJobs: listActiveJobs().map((j) => ({ id: j.id, type: j.type, status: j.status })),
           });
         }
-        if (err.stderr?.includes("Could not resolve")) {
-          return safeJson({
-            error: `Organization '${org}' not found or not accessible.`,
-          });
-        }
+
         return safeJson({
-          error: `Failed to fetch repos: ${err.message}`,
+          id: job.id,
+          type: job.type,
+          status: job.status,
+          progress: job.progress,
+          result: job.result,
+          error: job.error,
+          startedAt: job.startedAt.toISOString(),
+          completedAt: job.completedAt?.toISOString(),
+          duration: job.completedAt
+            ? `${((job.completedAt.getTime() - job.startedAt.getTime()) / 1000).toFixed(1)}s`
+            : undefined,
         });
       }
 
-      const initialCount = repos.length;
-
-      // Apply filters
-      const ORG_META_REPOS = [".github", "profile", ".github-private"];
-      const filter = filterPattern ? new RegExp(filterPattern) : undefined;
-      const exclude = excludePattern ? new RegExp(excludePattern) : undefined;
-
-      repos = repos.filter((repo) => {
-        if (!includeForks && repo.isFork) return false;
-        if (!includeArchived && repo.isArchived) return false;
-        if (ORG_META_REPOS.includes(repo.name)) return false;
-        if (filter && !filter.test(repo.name)) return false;
-        if (exclude && exclude.test(repo.name)) return false;
-        return true;
-      });
-
-      // Load existing config
-      const config = await loadConfigFile();
-
-      // Remove existing repos from this org before adding fresh ones
-      // This ensures a clean refresh when re-connecting an org
-      const orgUrlPattern = new RegExp(`github\\.com[:/]${org}/`, "i");
-      let removed = 0;
-      for (const [repoName, repoConfig] of Object.entries(config.repositories)) {
-        if (orgUrlPattern.test(repoConfig.url)) {
-          delete config.repositories[repoName];
-          removed++;
-        }
-      }
-
-      // Add repos
-      let added = 0;
-      let disabled = 0;
-
-      for (const repo of repos) {
-        const repoConfig = buildRepoConfig(repo, { includeNips });
-        config.repositories[repo.name] = repoConfig;
-        added++;
-
-        if (repoConfig.enabled === false) {
-          disabled++;
-        }
-      }
-
-      // Save config
-      await saveConfigFile(config);
-
-      // Clear the config cache so changes take effect immediately
-      clearConfigCache();
-
+      // List all jobs
+      const jobs = listJobs();
       return safeJson({
-        status: "connected",
-        org,
-        summary: {
-          fetched: initialCount,
-          afterFilters: repos.length,
-          removed,
-          added,
-          autoDisabled: disabled,
-          totalRepos: Object.keys(config.repositories).length,
-        },
-        message: `Connected ${org}! Removed ${removed} old repos, added ${added} new.${disabled > 0 ? ` ${disabled} test/demo repos auto-disabled.` : ""}`,
-        nextSteps: [
-          "Run extract_all to extract knowledge from all enabled repos",
-          "Use list_repos to see all connected repositories",
-          "Use generate_diagram to visualize the architecture",
-        ],
+        jobs: jobs.map((j) => ({
+          id: j.id,
+          type: j.type,
+          status: j.status,
+          progress: j.progress?.message,
+          startedAt: j.startedAt.toISOString(),
+          completedAt: j.completedAt?.toISOString(),
+        })),
+        activeCount: listActiveJobs().length,
       });
     },
   },
