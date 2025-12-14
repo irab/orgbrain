@@ -258,23 +258,26 @@ export const orgTools: ToolHandler[] = [
 
       // Load existing config
       const config = await loadConfigFile();
-      const existingCount = Object.keys(config.repositories).length;
+
+      // Remove existing repos from this org before adding fresh ones
+      // This ensures a clean refresh when re-connecting an org
+      const orgUrlPattern = new RegExp(`github\\.com[:/]${org}/`, "i");
+      let removed = 0;
+      for (const [repoName, repoConfig] of Object.entries(config.repositories)) {
+        if (orgUrlPattern.test(repoConfig.url)) {
+          delete config.repositories[repoName];
+          removed++;
+        }
+      }
 
       // Add repos
       let added = 0;
-      let updated = 0;
       let disabled = 0;
 
       for (const repo of repos) {
-        const isNew = !config.repositories[repo.name];
         const repoConfig = buildRepoConfig(repo, { includeNips });
         config.repositories[repo.name] = repoConfig;
-
-        if (isNew) {
-          added++;
-        } else {
-          updated++;
-        }
+        added++;
 
         if (repoConfig.enabled === false) {
           disabled++;
@@ -293,12 +296,12 @@ export const orgTools: ToolHandler[] = [
         summary: {
           fetched: initialCount,
           afterFilters: repos.length,
+          removed,
           added,
-          updated,
           autoDisabled: disabled,
           totalRepos: Object.keys(config.repositories).length,
         },
-        message: `Connected ${org}! Added ${added} new repos, updated ${updated} existing. ${disabled} test/demo repos auto-disabled.`,
+        message: `Connected ${org}! Removed ${removed} old repos, added ${added} new.${disabled > 0 ? ` ${disabled} test/demo repos auto-disabled.` : ""}`,
         nextSteps: [
           "Run extract_all to extract knowledge from all enabled repos",
           "Use list_repos to see all connected repositories",
