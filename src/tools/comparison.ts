@@ -5,6 +5,35 @@
 import { ToolHandler, safeJson, getStore, getEnabledExtractedRepos, sanitize } from "./shared.js";
 
 /**
+ * Validate git ref format (branch/tag name)
+ */
+function isValidGitRef(ref: unknown): ref is string {
+  if (!ref || typeof ref !== "string") return false;
+  if (ref.length > 250) return false;
+  if (/\.\./.test(ref)) return false; // No double dots
+  if (/^\/|\/\/|\/$/g.test(ref)) return false; // No leading/trailing/double slashes
+  if (/[\x00-\x1F\x7F~^:?*\[\]\\]/.test(ref)) return false; // No special chars
+  return true;
+}
+
+/**
+ * Validate repository name format
+ */
+function isValidRepoName(repo: unknown): repo is string {
+  if (!repo || typeof repo !== "string") return false;
+  return /^[a-zA-Z0-9._-]{1,100}$/.test(repo);
+}
+
+/**
+ * Validate extractor name
+ */
+function isValidExtractorName(extractor: unknown): extractor is string {
+  if (!extractor || typeof extractor !== "string") return false;
+  const validExtractors = ["nip_usage", "user_flows", "data_flow", "kubernetes", "terraform", "monorepo", "journey_impact"];
+  return validExtractors.includes(extractor);
+}
+
+/**
  * Diff two sets and return added/removed items
  */
 function diffSets<T>(from: T[], to: T[]): { added: T[]; removed: T[] } {
@@ -116,10 +145,42 @@ export const comparisonTools: ToolHandler[] = [
       required: ["from_ref", "to_ref"],
     },
     handler: async (args) => {
-      const fromRef = args.from_ref as string;
-      const toRef = args.to_ref as string;
-      const repoFilter = args.repo as string | undefined;
-      const extractorFilter = args.extractor as string | undefined;
+      const fromRef = args.from_ref;
+      const toRef = args.to_ref;
+      const repoFilter = args.repo;
+      const extractorFilter = args.extractor;
+
+      // Validate from_ref
+      if (!isValidGitRef(fromRef)) {
+        return safeJson({
+          error: "Invalid from_ref",
+          message: "Please provide a valid branch or tag name for from_ref.",
+        });
+      }
+
+      // Validate to_ref
+      if (!isValidGitRef(toRef)) {
+        return safeJson({
+          error: "Invalid to_ref",
+          message: "Please provide a valid branch or tag name for to_ref.",
+        });
+      }
+
+      // Validate repo filter if provided
+      if (repoFilter !== undefined && !isValidRepoName(repoFilter)) {
+        return safeJson({
+          error: "Invalid repository name",
+          message: "Repository names must be 1-100 characters containing only alphanumeric characters, hyphens, underscores, and dots.",
+        });
+      }
+
+      // Validate extractor filter if provided
+      if (extractorFilter !== undefined && !isValidExtractorName(extractorFilter)) {
+        return safeJson({
+          error: "Invalid extractor name",
+          message: "Valid extractors are: nip_usage, user_flows, data_flow, kubernetes, terraform, monorepo, journey_impact",
+        });
+      }
 
       const s = await getStore();
       const repos = await getEnabledExtractedRepos();

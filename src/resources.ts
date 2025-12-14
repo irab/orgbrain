@@ -3,7 +3,7 @@
  */
 
 import { promises as fs } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, resolve, relative } from "path";
 import { fileURLToPath } from "url";
 import { glob } from "glob";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -12,6 +12,31 @@ import { loadConfig } from "./lib/config-loader.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+/**
+ * Validate and sanitize a path segment (repo name, ref, extractor name)
+ * Returns null if the segment is invalid
+ */
+function validatePathSegment(segment: string, maxLength = 100): string | null {
+  if (!segment || typeof segment !== "string") return null;
+  // Only allow alphanumeric, dots, hyphens, underscores
+  // This prevents path traversal attacks via segments like ".." or "/"
+  const sanitized = segment.slice(0, maxLength);
+  if (!/^[a-zA-Z0-9._-]+$/.test(sanitized)) return null;
+  // Extra check: no double dots even if they passed the regex (shouldn't happen but be safe)
+  if (sanitized.includes("..")) return null;
+  return sanitized;
+}
+
+/**
+ * Validate that a constructed path stays within the base directory
+ */
+function isPathSafe(fullPath: string, baseDir: string): boolean {
+  const normalizedBase = resolve(baseDir);
+  const normalizedPath = resolve(fullPath);
+  // Ensure the resolved path is within the base directory
+  return normalizedPath.startsWith(normalizedBase + "/") || normalizedPath === normalizedBase;
+}
 
 export async function registerResources(server: McpServer): Promise<void> {
   const config = await loadConfig();
@@ -56,7 +81,34 @@ export async function registerResources(server: McpServer): Promise<void> {
       const repo = Array.isArray(vars.repo) ? vars.repo[0] : vars.repo;
       const ref = Array.isArray(vars.ref) ? vars.ref[0] : vars.ref;
       const extractor = Array.isArray(vars.extractor) ? vars.extractor[0] : vars.extractor;
-      const filePath = join(knowledgeDir, repo, ref, `${extractor}.json`);
+
+      // Validate all path segments to prevent path traversal
+      const safeRepo = validatePathSegment(repo);
+      const safeRef = validatePathSegment(ref, 250); // Git refs can be longer
+      const safeExtractor = validatePathSegment(extractor, 50);
+
+      if (!safeRepo || !safeRef || !safeExtractor) {
+        return {
+          contents: [{
+            uri: uri.href,
+            mimeType: "text/plain",
+            text: "Error: Invalid path parameters. Path segments must contain only alphanumeric characters, dots, hyphens, and underscores.",
+          }],
+        };
+      }
+
+      const filePath = join(knowledgeDir, safeRepo, safeRef, `${safeExtractor}.json`);
+
+      // Double-check the path is within the knowledge directory
+      if (!isPathSafe(filePath, knowledgeDir)) {
+        return {
+          contents: [{
+            uri: uri.href,
+            mimeType: "text/plain",
+            text: "Error: Access denied - path traversal not allowed.",
+          }],
+        };
+      }
 
       try {
         const content = await fs.readFile(filePath, "utf-8");
@@ -113,7 +165,41 @@ export async function registerResources(server: McpServer): Promise<void> {
     { description: "Static knowledge files (markdown documentation, matrices)" },
     async (uri, vars) => {
       const path = Array.isArray(vars.path) ? vars.path.join("/") : vars.path;
+
+      // Validate path to prevent directory traversal
+      if (!path || typeof path !== "string") {
+        return {
+          contents: [{
+            uri: uri.href,
+            mimeType: "text/plain",
+            text: "Error: Invalid path parameter.",
+          }],
+        };
+      }
+
+      // Check for path traversal attempts
+      if (path.includes("..") || path.startsWith("/")) {
+        return {
+          contents: [{
+            uri: uri.href,
+            mimeType: "text/plain",
+            text: "Error: Access denied - path traversal not allowed.",
+          }],
+        };
+      }
+
       const filePath = join(staticKnowledgeDir, path);
+
+      // Double-check the resolved path is within the static knowledge directory
+      if (!isPathSafe(filePath, staticKnowledgeDir)) {
+        return {
+          contents: [{
+            uri: uri.href,
+            mimeType: "text/plain",
+            text: "Error: Access denied - path traversal not allowed.",
+          }],
+        };
+      }
 
       try {
         const content = await fs.readFile(filePath, "utf-8");

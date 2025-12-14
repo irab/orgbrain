@@ -82,6 +82,23 @@ interface TerraformData {
 
 type C4DiagramType = "context" | "container" | "component" | "dynamic" | "deployment";
 
+const VALID_C4_TYPES: C4DiagramType[] = ["context", "container", "component", "dynamic", "deployment"];
+
+/**
+ * Validate repository name format
+ */
+function isValidRepoName(repo: unknown): repo is string {
+  if (!repo || typeof repo !== "string") return false;
+  return /^[a-zA-Z0-9._-]{1,100}$/.test(repo);
+}
+
+/**
+ * Validate C4 diagram type
+ */
+function isValidC4Type(type: unknown): type is C4DiagramType {
+  return typeof type === "string" && VALID_C4_TYPES.includes(type as C4DiagramType);
+}
+
 /**
  * Group screens by their app folder
  */
@@ -667,7 +684,26 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
     },
     handler: async (args) => {
       const targetRepo = args.repo as string | undefined;
-      const diagramType = (args.type as C4DiagramType) || "container";
+      const diagramType = args.type as string | undefined;
+
+      // Validate repo name format if provided
+      if (targetRepo !== undefined && !isValidRepoName(targetRepo)) {
+        return safeJson({
+          error: "Invalid repository name",
+          message: "Repository names must be 1-100 characters containing only alphanumeric characters, hyphens, underscores, and dots.",
+        });
+      }
+
+      // Validate diagram type if provided
+      const effectiveDiagramType: C4DiagramType = diagramType && isValidC4Type(diagramType) ? diagramType : "container";
+      if (diagramType !== undefined && !isValidC4Type(diagramType)) {
+        return safeJson({
+          error: "Invalid diagram type",
+          message: `Valid diagram types are: ${VALID_C4_TYPES.join(", ")}`,
+          providedType: diagramType,
+        });
+      }
+
       const config = await loadConfig();
 
       // Single repo mode
@@ -697,7 +733,7 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
 
         let lines: string[];
 
-        switch (diagramType) {
+        switch (effectiveDiagramType) {
           case "context":
             lines = generateC4Context(targetRepo, label, monorepo, dataFlow);
             break;
@@ -722,7 +758,7 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
         return safeJson({
           repo: targetRepo,
           ref: latest.ref,
-          type: diagramType,
+          type: effectiveDiagramType,
           mermaid,
           valid: validation.valid,
           ...(validation.errors.length > 0 && { syntaxErrors: validation.errors }),
@@ -749,14 +785,14 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
       const others = mainRepos.filter((r) => !["frontend", "backend", "infra"].includes(inferCategory(r.name, config.repositories[r.name]?.type)));
 
       let lines: string[];
-      let effectiveType = diagramType;
+      let ecosystemType = effectiveDiagramType;
 
       // Component and Dynamic don't make sense at ecosystem level - fallback to context
-      if (diagramType === "component" || diagramType === "dynamic") {
-        effectiveType = "context";
+      if (effectiveDiagramType === "component" || effectiveDiagramType === "dynamic") {
+        ecosystemType = "context";
       }
 
-      if (effectiveType === "container") {
+      if (ecosystemType === "container") {
         // Ecosystem Container: show all apps/containers across all repos
         lines = ["C4Container"];
         lines.push("    title Container Diagram - Platform Overview");
@@ -807,7 +843,7 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
           }
         }
 
-      } else if (effectiveType === "deployment") {
+      } else if (ecosystemType === "deployment") {
         // Ecosystem Deployment: aggregate K8s/TF across all repos
         lines = ["C4Deployment"];
         lines.push("    title Deployment Diagram - Platform Infrastructure");
@@ -917,7 +953,7 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
 
       return safeJson({
         mode: "ecosystem",
-        type: effectiveType,
+        type: ecosystemType,
         mermaid,
         valid: validation.valid,
         ...(validation.errors.length > 0 && { syntaxErrors: validation.errors }),
@@ -947,6 +983,15 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
     },
     handler: async (args) => {
       const targetRepo = args.repo as string | undefined;
+
+      // Validate repo name format if provided
+      if (targetRepo !== undefined && !isValidRepoName(targetRepo)) {
+        return safeJson({
+          error: "Invalid repository name",
+          message: "Repository names must be 1-100 characters containing only alphanumeric characters, hyphens, underscores, and dots.",
+        });
+      }
+
       const config = await loadConfig();
 
       if (targetRepo) {

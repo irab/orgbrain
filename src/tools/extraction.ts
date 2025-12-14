@@ -8,6 +8,26 @@ import "../extractors/index.js"; // Register all extractors
 import { ToolHandler, safeJson, getStore, getGitManager } from "./shared.js";
 
 /**
+ * Validate repository name format
+ */
+function isValidRepoName(repo: unknown): repo is string {
+  if (!repo || typeof repo !== "string") return false;
+  return /^[a-zA-Z0-9._-]{1,100}$/.test(repo);
+}
+
+/**
+ * Validate git ref format (branch/tag name)
+ */
+function isValidGitRef(ref: unknown): ref is string {
+  if (!ref || typeof ref !== "string") return false;
+  if (ref.length > 250) return false;
+  if (/\.\./.test(ref)) return false; // No double dots
+  if (/^\/|\/\/|\/$/g.test(ref)) return false; // No leading/trailing/double slashes
+  if (/[\x00-\x1F\x7F~^:?*\[\]\\]/.test(ref)) return false; // No special chars
+  return true;
+}
+
+/**
  * Summarize extracted knowledge for response
  */
 function summarizeKnowledge(data: Record<string, unknown> | undefined): Record<string, unknown> {
@@ -82,17 +102,42 @@ export const extractionTools: ToolHandler[] = [
       required: ["repo", "ref"],
     },
     handler: async (args) => {
-      const repoName = args.repo as string;
-      const ref = args.ref as string;
-      const force = (args.force as boolean) || false;
+      const repoName = args.repo;
+      const ref = args.ref;
+      const force = Boolean(args.force) || false;
 
-      const config = await loadConfig();
+      // Validate repo name
+      if (!isValidRepoName(repoName)) {
+        return safeJson({
+          error: "Invalid repository name",
+          message: "Repository names must be 1-100 characters containing only alphanumeric characters, hyphens, underscores, and dots.",
+        });
+      }
+
+      // Validate git ref
+      if (!isValidGitRef(ref)) {
+        return safeJson({
+          error: "Invalid git ref",
+          message: "Please provide a valid branch or tag name (no special characters like .., ~, ^, :, ?, *, [, ], \\).",
+        });
+      }
+
+      let config;
+      try {
+        config = await loadConfig();
+      } catch (error) {
+        return safeJson({
+          error: "Failed to load config",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+
       const repoConfig = config.repositories[repoName];
 
       if (!repoConfig) {
         return safeJson({
           error: `Repository "${repoName}" not found in config`,
-          availableRepos: Object.keys(config.repositories),
+          availableRepos: Object.keys(config.repositories).slice(0, 20), // Limit list
         });
       }
 
@@ -227,15 +272,40 @@ export const extractionTools: ToolHandler[] = [
         },
         repos: {
           type: "string",
-          description: "Optional: limit to specific repos",
+          description: "Optional: limit to specific repos (comma-separated)",
         },
       },
     },
     handler: async (args) => {
-      const force = (args.force as boolean) || false;
+      const force = Boolean(args.force) || false;
       const reposFilter = args.repos as string | undefined;
 
-      const config = await loadConfig();
+      // Validate repos filter if provided
+      if (reposFilter !== undefined && typeof reposFilter !== "string") {
+        return safeJson({
+          error: "Invalid repos parameter",
+          message: "The 'repos' parameter must be a comma-separated string of repository names.",
+        });
+      }
+
+      // Limit filter length to prevent abuse
+      if (reposFilter && reposFilter.length > 1000) {
+        return safeJson({
+          error: "Repos filter too long",
+          message: "The repos filter string must be less than 1000 characters.",
+        });
+      }
+
+      let config;
+      try {
+        config = await loadConfig();
+      } catch (error) {
+        return safeJson({
+          error: "Failed to load config",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+
       const s = await getStore();
       const gm = await getGitManager();
 
@@ -247,9 +317,22 @@ export const extractionTools: ToolHandler[] = [
         error?: string;
       }> = [];
 
-      const repoNames = reposFilter
-        ? reposFilter.split(",").map((r) => r.trim())
-        : Object.keys(config.repositories);
+      // Parse and validate repo names if filter provided
+      let repoNames: string[];
+      if (reposFilter) {
+        repoNames = reposFilter.split(",").map((r) => r.trim()).filter((r) => r.length > 0);
+        // Validate each repo name
+        for (const name of repoNames) {
+          if (!isValidRepoName(name)) {
+            return safeJson({
+              error: `Invalid repository name: "${name}"`,
+              message: "Repository names must be 1-100 characters containing only alphanumeric characters, hyphens, underscores, and dots.",
+            });
+          }
+        }
+      } else {
+        repoNames = Object.keys(config.repositories);
+      }
 
       for (const repoName of repoNames) {
         const repoConfig = config.repositories[repoName];

@@ -15,6 +15,44 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const CONFIG_PATH = join(__dirname, "..", "..", "config", "repos.yaml");
 
+/**
+ * Validate GitHub organization name format
+ */
+function isValidOrgName(org: string): boolean {
+  if (!org || typeof org !== "string") return false;
+  // GitHub org names: alphanumeric and hyphens, 1-39 chars, can't start/end with hyphen
+  return /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/.test(org);
+}
+
+/**
+ * Validate regex pattern - returns true if valid, false if invalid
+ */
+function isValidRegex(pattern: string): boolean {
+  if (!pattern || typeof pattern !== "string") return false;
+  if (pattern.length > 500) return false; // Prevent ReDoS with very long patterns
+  try {
+    new RegExp(pattern);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Escape special regex characters in a string
+ */
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Validate repository name format
+ */
+function isValidRepoName(repo: string): boolean {
+  if (!repo || typeof repo !== "string") return false;
+  return /^[a-zA-Z0-9._-]{1,100}$/.test(repo);
+}
+
 interface GHRepo {
   name: string;
   description: string | null;
@@ -287,8 +325,8 @@ async function runConnectOrg(job: Job, options: ConnectOrgOptions): Promise<void
     // Step 3: Update config
     const config = await loadConfigFile();
 
-    // Remove existing repos from this org
-    const orgUrlPattern = new RegExp(`github\\.com[:/]${org}/`, "i");
+    // Remove existing repos from this org (escape org name for regex safety)
+    const orgUrlPattern = new RegExp(`github\\.com[:/]${escapeRegex(org)}/`, "i");
     let removed = 0;
     for (const [repoName, repoConfig] of Object.entries(config.repositories)) {
       if (orgUrlPattern.test(repoConfig.url)) {
@@ -387,11 +425,35 @@ export const orgTools: ToolHandler[] = [
     },
     handler: async (args) => {
       const org = args.org as string;
-      const includeForks = (args.include_forks as boolean) || false;
-      const includeArchived = (args.include_archived as boolean) || false;
-      const includeNips = (args.include_nips as boolean) || false;
+
+      // Validate organization name
+      if (!isValidOrgName(org)) {
+        return safeJson({
+          error: "Invalid organization name",
+          message: "GitHub organization names must be 1-39 characters, containing only alphanumeric characters and hyphens, and cannot start or end with a hyphen.",
+        });
+      }
+
+      const includeForks = Boolean(args.include_forks) || false;
+      const includeArchived = Boolean(args.include_archived) || false;
+      const includeNips = Boolean(args.include_nips) || false;
       const filterPattern = args.filter as string | undefined;
       const excludePattern = args.exclude as string | undefined;
+
+      // Validate regex patterns if provided
+      if (filterPattern && !isValidRegex(filterPattern)) {
+        return safeJson({
+          error: "Invalid filter pattern",
+          message: "The filter pattern is not a valid regular expression. Please check the syntax.",
+        });
+      }
+
+      if (excludePattern && !isValidRegex(excludePattern)) {
+        return safeJson({
+          error: "Invalid exclude pattern",
+          message: "The exclude pattern is not a valid regular expression. Please check the syntax.",
+        });
+      }
 
       // Create background job
       const job = createJob(`connect_org:${org}`);
@@ -429,6 +491,14 @@ export const orgTools: ToolHandler[] = [
       const jobId = args.jobId as string | undefined;
 
       if (jobId) {
+        // Validate jobId format (UUID-like or reasonable string)
+        if (typeof jobId !== "string" || jobId.length === 0 || jobId.length > 100) {
+          return safeJson({
+            error: "Invalid job ID",
+            message: "Job ID must be a non-empty string (max 100 characters).",
+          });
+        }
+
         const job = getJob(jobId);
         if (!job) {
           return safeJson({
@@ -483,24 +553,39 @@ export const orgTools: ToolHandler[] = [
     handler: async (args) => {
       const repoName = args.repo as string;
 
-      const config = await loadConfigFile();
-
-      if (!config.repositories[repoName]) {
+      // Validate repo name format
+      if (!isValidRepoName(repoName)) {
         return safeJson({
-          error: `Repository "${repoName}" not found in config`,
-          availableRepos: Object.keys(config.repositories),
+          error: "Invalid repository name",
+          message: "Repository names must be 1-100 characters containing only alphanumeric characters, hyphens, underscores, and dots.",
         });
       }
 
-      delete config.repositories[repoName];
-      await saveConfigFile(config);
-      clearConfigCache();
+      try {
+        const config = await loadConfigFile();
 
-      return safeJson({
-        status: "disconnected",
-        repo: repoName,
-        remainingRepos: Object.keys(config.repositories).length,
-      });
+        if (!config.repositories[repoName]) {
+          return safeJson({
+            error: `Repository "${repoName}" not found in config`,
+            availableRepos: Object.keys(config.repositories).slice(0, 20), // Limit to 20 to avoid huge responses
+          });
+        }
+
+        delete config.repositories[repoName];
+        await saveConfigFile(config);
+        clearConfigCache();
+
+        return safeJson({
+          status: "disconnected",
+          repo: repoName,
+          remainingRepos: Object.keys(config.repositories).length,
+        });
+      } catch (error) {
+        return safeJson({
+          error: "Failed to disconnect repository",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
     },
   },
   {
@@ -522,30 +607,53 @@ export const orgTools: ToolHandler[] = [
     },
     handler: async (args) => {
       const repoName = args.repo as string;
-      const enabled = args.enabled as boolean;
+      const enabled = args.enabled;
 
-      const config = await loadConfigFile();
-
-      if (!config.repositories[repoName]) {
+      // Validate repo name format
+      if (!isValidRepoName(repoName)) {
         return safeJson({
-          error: `Repository "${repoName}" not found in config`,
-          availableRepos: Object.keys(config.repositories),
+          error: "Invalid repository name",
+          message: "Repository names must be 1-100 characters containing only alphanumeric characters, hyphens, underscores, and dots.",
         });
       }
 
-      if (enabled) {
-        delete config.repositories[repoName].enabled;
-      } else {
-        config.repositories[repoName].enabled = false;
+      // Validate enabled is a boolean
+      if (typeof enabled !== "boolean") {
+        return safeJson({
+          error: "Invalid enabled value",
+          message: "The 'enabled' parameter must be a boolean (true or false).",
+        });
       }
 
-      await saveConfigFile(config);
-      clearConfigCache();
+      try {
+        const config = await loadConfigFile();
 
-      return safeJson({
-        status: enabled ? "enabled" : "disabled",
-        repo: repoName,
-      });
+        if (!config.repositories[repoName]) {
+          return safeJson({
+            error: `Repository "${repoName}" not found in config`,
+            availableRepos: Object.keys(config.repositories).slice(0, 20), // Limit to 20
+          });
+        }
+
+        if (enabled) {
+          delete config.repositories[repoName].enabled;
+        } else {
+          config.repositories[repoName].enabled = false;
+        }
+
+        await saveConfigFile(config);
+        clearConfigCache();
+
+        return safeJson({
+          status: enabled ? "enabled" : "disabled",
+          repo: repoName,
+        });
+      } catch (error) {
+        return safeJson({
+          error: "Failed to toggle repository",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
     },
   },
 ];
