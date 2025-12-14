@@ -48,6 +48,16 @@ interface Config {
   repositories: Record<string, RepoConfig>;
 }
 
+/**
+ * Check if a repo name contains a word (not just substring).
+ * Matches at word boundaries: start/end of string or separated by - or _
+ * e.g., "test-repo" matches "test", but "battle-tested" does NOT match "test"
+ */
+function nameContainsWord(name: string, word: string): boolean {
+  const regex = new RegExp(`(^|[-_])${word}($|[-_])`, "i");
+  return regex.test(name);
+}
+
 function inferRepoType(repo: GHRepo): string {
   const name = repo.name.toLowerCase();
   const lang = repo.primaryLanguage?.name?.toLowerCase() || "";
@@ -70,7 +80,9 @@ function inferRepoType(repo: GHRepo): string {
   if (name.includes("doc") || name.includes("spec")) {
     return "documentation";
   }
-  if (name.includes("test") || name.includes("demo") || name.includes("poc") || name.includes("example")) {
+  // Use word-boundary matching for test patterns to avoid false positives
+  // e.g., "battle-tested" should NOT match "test"
+  if (["test", "demo", "poc", "example"].some((t) => nameContainsWord(name, t))) {
     return "test";
   }
 
@@ -108,8 +120,9 @@ function buildRepoConfig(repo: GHRepo, options: { includeNips?: boolean } = {}):
 
   extractors.push({ name: "journey_impact" });
 
+  // Use word-boundary matching to avoid false positives like "battle-tested" matching "test"
   const looksLikeTest = ["test", "demo", "poc", "example", "sandbox", "playground"].some((t) =>
-    repo.name.toLowerCase().includes(t)
+    nameContainsWord(repo.name, t)
   );
 
   const config: RepoConfig = {
