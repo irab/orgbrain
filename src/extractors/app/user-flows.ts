@@ -32,10 +32,21 @@ const userFlowsExtractor: Extractor = {
     const ignore = config.ignore || [];
     const limit = config.limit || 50;
 
+    // Built-in patterns to exclude test files and common non-screen files
+    const builtInIgnore = [
+      ".test.", ".spec.", ".nuxt.test.", ".nuxt.spec.",
+      "__tests__", "/tests/", "/test/", "/__mocks__/",
+      ".stories.", ".story."
+    ];
+
     const screenFiles = allFiles.filter((f) => {
       const isScreen = f.includes("/screens/") || f.includes("/pages/") || f.includes("/views/");
-      const ignored = ignore.some((pat) => f.includes(pat.replace("**", "")));
-      return isScreen && !ignored && (f.endsWith(".dart") || f.endsWith(".tsx") || f.endsWith(".vue") || f.endsWith(".js") || f.endsWith(".ts"));
+      const isTestFile = builtInIgnore.some((pat) => f.includes(pat));
+      const isUserIgnored = ignore.some((pat) => f.includes(pat.replace("**", "")));
+      const isValidExtension = f.endsWith(".dart") || f.endsWith(".tsx") || f.endsWith(".vue") || f.endsWith(".jsx");
+      // Only include .ts/.js if they're not in a test directory and don't have test extensions
+      const isPlainScript = (f.endsWith(".ts") || f.endsWith(".js")) && !isTestFile;
+      return isScreen && !isTestFile && !isUserIgnored && (isValidExtension || isPlainScript);
     }).slice(0, limit);
 
     const screens: Screen[] = [];
