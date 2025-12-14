@@ -6,9 +6,44 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { loadConfig } from "./lib/config-loader.js";
+import { loadConfig, clearConfigCache } from "./lib/config-loader.js";
 
 export async function registerPrompts(server: McpServer): Promise<void> {
+  // Connect a GitHub organization
+  server.prompt(
+    "connect-org",
+    "Connect a GitHub organization to import all repositories",
+    {
+      org: z.string().describe("GitHub organization name (e.g., 'facebook', 'vercel')"),
+      include_nips: z.boolean().optional().describe("Include NIP extractor for Nostr repos"),
+    },
+    async ({ org, include_nips }) => ({
+      messages: [
+        {
+          role: "user" as const,
+          content: {
+            type: "text" as const,
+            text: `Please connect the GitHub organization "${org}" to orgbrain:
+
+1. Call connect_org with org="${org}"${include_nips ? " and include_nips=true" : ""}
+
+2. After connecting, show a summary of:
+   - How many repos were added
+   - How many were auto-disabled (test/demo repos)
+   - The breakdown by type (frontend, backend, etc.)
+
+3. Ask if I want to:
+   - Extract knowledge from all repos now (extract_all)
+   - See the architecture diagram (generate_diagram)
+   - Enable/disable specific repos (toggle_repo)
+
+Note: This requires GitHub CLI (gh) to be authenticated. If you get an auth error, run 'gh auth login' first.`,
+          },
+        },
+      ],
+    })
+  );
+
   // Analyze a specific repository
   server.prompt(
     "analyze-repo",
@@ -227,6 +262,36 @@ Configuration shows ${repoCount} repositories (${enabledCount} enabled).
    - How fresh is the data?
    - Are there any repos that need extraction?
    - Any disabled repos?`,
+          },
+        },
+      ],
+    };
+  });
+
+  // Reload configuration
+  server.prompt("reload-config", "Reload the repos.yaml configuration (clears cache)", {}, async () => {
+    clearConfigCache();
+    const config = await loadConfig();
+    const repoCount = Object.keys(config.repositories).length;
+    const enabledCount = Object.values(config.repositories).filter((r) => r.enabled !== false).length;
+    const disabledRepos = Object.entries(config.repositories)
+      .filter(([_, r]) => r.enabled === false)
+      .map(([name]) => name);
+
+    return {
+      messages: [
+        {
+          role: "user" as const,
+          content: {
+            type: "text" as const,
+            text: `Configuration reloaded successfully!
+
+**Summary:**
+- Total repositories: ${repoCount}
+- Enabled: ${enabledCount}
+- Disabled: ${disabledRepos.length > 0 ? disabledRepos.join(", ") : "none"}
+
+The config cache has been cleared and the latest repos.yaml has been loaded.`,
           },
         },
       ],
