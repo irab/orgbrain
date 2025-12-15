@@ -7,7 +7,9 @@ import { promises as fs } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import YAML from "yaml";
-import { ToolHandler, safeJson } from "./shared.js";
+import { ToolHandler, safeJson, getStore, getGitManager } from "./shared.js";
+import { runExtractors } from "../lib/extractor-base.js";
+import "../extractors/index.js"; // Register all extractors
 import { clearConfigCache } from "../lib/config-loader.js";
 import { createJob, getJob, updateJob, listJobs, listActiveJobs, type Job } from "../lib/job-manager.js";
 
@@ -282,7 +284,7 @@ async function runConnectOrg(job: Job, options: ConnectOrgOptions): Promise<void
   try {
     updateJob(job.id, {
       status: "running",
-      progress: { current: 0, total: 4, message: "Fetching repos from GitHub..." },
+      progress: { current: 0, total: 5, message: "Fetching repos from GitHub..." },
     });
 
     // Step 1: Fetch repos
@@ -301,7 +303,7 @@ async function runConnectOrg(job: Job, options: ConnectOrgOptions): Promise<void
     const initialCount = repos.length;
 
     updateJob(job.id, {
-      progress: { current: 1, total: 4, message: `Fetched ${initialCount} repos, filtering...` },
+      progress: { current: 1, total: 5, message: `Fetched ${initialCount} repos, filtering...` },
     });
 
     // Step 2: Apply filters
@@ -319,14 +321,19 @@ async function runConnectOrg(job: Job, options: ConnectOrgOptions): Promise<void
     });
 
     updateJob(job.id, {
-      progress: { current: 2, total: 4, message: `${repos.length} repos after filters, updating config...` },
+      progress: { current: 2, total: 5, message: `${repos.length} repos after filters, clearing old data...` },
     });
 
-    // Step 3: Update config
+    // Step 3: Clear existing data and update config
     const config = await loadConfigFile();
 
     // Clear all existing repos - connect_org gives a fresh start
     const removed = Object.keys(config.repositories).length;
+    
+    // Clear extracted knowledge for all repos
+    const store = await getStore();
+    const deletedKnowledge = await store.deleteAll();
+    
     config.repositories = {};
 
     // Add repos
@@ -344,29 +351,137 @@ async function runConnectOrg(job: Job, options: ConnectOrgOptions): Promise<void
     }
 
     updateJob(job.id, {
-      progress: { current: 3, total: 4, message: "Saving config..." },
+      progress: { current: 3, total: 5, message: "Saving config..." },
     });
 
-    // Step 4: Save
+    // Step 4: Save config
     await saveConfigFile(config);
     clearConfigCache();
 
+    // Step 5: Extract knowledge from all enabled repos
+    const enabledRepos = repos.filter((r) => {
+      const repoConfig = config.repositories[r.name];
+      return repoConfig && repoConfig.enabled !== false;
+    });
+
+    const gm = await getGitManager();
+    const extractionResults: Array<{
+      repo: string;
+      ref: string;
+      status: string;
+      extractors?: string[];
+      error?: string;
+    }> = [];
+
+    for (let i = 0; i < enabledRepos.length; i++) {
+      const repo = enabledRepos[i];
+      const repoConfig = config.repositories[repo.name];
+      const ref = repoConfig.default_branch || "main";
+
+      updateJob(job.id, {
+        progress: {
+          current: 4,
+          total: 5,
+          message: `Extracting ${i + 1}/${enabledRepos.length}: ${repo.name}...`,
+        },
+      });
+
+      try {
+        const repoPath = await gm.ensureRepo(repo.name, repoConfig.url);
+        const files = await gm.listFilesAtRef(repoPath, ref);
+
+        // Auto-detect and add extractors based on actual file contents
+        let extractors = [...repoConfig.extractors];
+
+        // Auto-detect monorepo
+        const hasMonorepoExtractor = extractors.some((e) => e.name === "monorepo");
+        if (!hasMonorepoExtractor) {
+          const isMonorepo = files.some(
+            (f) =>
+              f === "turbo.json" ||
+              f === "pnpm-workspace.yaml" ||
+              f === "nx.json" ||
+              f === "lerna.json"
+          );
+          if (isMonorepo) {
+            extractors = [{ name: "monorepo" }, ...extractors];
+          }
+        }
+
+        // Auto-detect Terraform files
+        const hasTerraformExtractor = extractors.some((e) => e.name === "terraform");
+        if (!hasTerraformExtractor) {
+          const hasTerraform = files.some(
+            (f) => f.endsWith(".tf") || f.endsWith(".tfvars") || f.includes("terraform")
+          );
+          if (hasTerraform) {
+            extractors.push({ name: "terraform" });
+          }
+        }
+
+        // Auto-detect Kubernetes manifests
+        const hasKubernetesExtractor = extractors.some((e) => e.name === "kubernetes");
+        if (!hasKubernetesExtractor) {
+          const hasK8s = files.some(
+            (f) =>
+              f.includes("k8s/") ||
+              f.includes("kubernetes/") ||
+              f.includes("kube/") ||
+              f.includes("manifests/") ||
+              f.includes("helm/") ||
+              f.includes("charts/") ||
+              (f.endsWith(".yaml") && (f.includes("deploy") || f.includes("service") || f.includes("ingress")))
+          );
+          if (hasK8s) {
+            extractors.push({ name: "kubernetes" });
+          }
+        }
+
+        const extractResults = await runExtractors(
+          { repoName: repo.name, repoPath, ref, refType: "branch", gitManager: gm },
+          extractors
+        );
+
+        await store.save(repo.name, "branch", ref, extractResults);
+
+        extractionResults.push({
+          repo: repo.name,
+          ref,
+          status: "extracted",
+          extractors: extractResults.map((r) => r.extractor),
+        });
+      } catch (error) {
+        extractionResults.push({
+          repo: repo.name,
+          ref,
+          status: "error",
+          error: String(error),
+        });
+      }
+    }
+
+    const extracted = extractionResults.filter((r) => r.status === "extracted").length;
+    const errors = extractionResults.filter((r) => r.status === "error").length;
+
     updateJob(job.id, {
       status: "completed",
-      progress: { current: 4, total: 4, message: "Done" },
+      progress: { current: 5, total: 5, message: "Done" },
       result: {
         org,
         summary: {
           fetched: initialCount,
           afterFilters: repos.length,
           removed,
+          removedKnowledge: deletedKnowledge,
           added,
           autoDisabled: disabled,
           totalRepos: Object.keys(config.repositories).length,
+          extracted,
+          extractionErrors: errors,
         },
-        message: `Connected ${org}! Removed ${removed} old repos, added ${added} new.${disabled > 0 ? ` ${disabled} test/demo repos auto-disabled.` : ""}`,
+        message: `Connected ${org}! Removed ${removed} old repos, added ${added} new (${disabled} disabled). Extracted ${extracted}/${enabledRepos.length} repos.${errors > 0 ? ` ${errors} errors.` : ""}`,
+        extraction: extractionResults,
         nextSteps: [
-          "Run extract_all to extract knowledge from all enabled repos",
           "Use list_repos to see all connected repositories",
           "Use generate_diagram to visualize the architecture",
         ],
@@ -386,7 +501,7 @@ export const orgTools: ToolHandler[] = [
   {
     name: "connect_org",
     description:
-      "Connect a GitHub organization - fetches all repos and adds them to config. Runs as a background job; use job_status to check progress. Requires GitHub CLI (gh) to be authenticated.",
+      "Connect a GitHub organization - fetches all repos, clears existing config and knowledge, then extracts knowledge from all enabled repos. Runs as a background job; use job_status to check progress. Requires GitHub CLI (gh) to be authenticated.",
     schema: {
       type: "object",
       properties: {

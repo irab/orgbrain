@@ -198,12 +198,13 @@ export const extractionTools: ToolHandler[] = [
         const refInfo = isBranch ? branches.find((b) => b.name === ref) : tags.find((t) => t.name === ref);
         const sha = refInfo?.sha;
 
-        // Auto-detect monorepo if not configured
+        // Auto-detect and add extractors based on actual file contents
+        const files = await gm.listFilesAtRef(repoPath, ref);
         let extractors = [...repoConfig.extractors];
-        const hasMonorepoExtractor = extractors.some((e) => e.name === "monorepo");
 
+        // Auto-detect monorepo
+        const hasMonorepoExtractor = extractors.some((e) => e.name === "monorepo");
         if (!hasMonorepoExtractor) {
-          const files = await gm.listFilesAtRef(repoPath, ref);
           const isMonorepo = files.some(
             (f) =>
               f === "turbo.json" ||
@@ -213,9 +214,37 @@ export const extractionTools: ToolHandler[] = [
               f.match(/^packages\/[^/]+\/package\.json$/) ||
               f.match(/^apps\/[^/]+\/package\.json$/)
           );
-
           if (isMonorepo) {
             extractors = [{ name: "monorepo" }, ...extractors];
+          }
+        }
+
+        // Auto-detect Terraform files
+        const hasTerraformExtractor = extractors.some((e) => e.name === "terraform");
+        if (!hasTerraformExtractor) {
+          const hasTerraform = files.some(
+            (f) => f.endsWith(".tf") || f.endsWith(".tfvars") || f.includes("terraform")
+          );
+          if (hasTerraform) {
+            extractors.push({ name: "terraform" });
+          }
+        }
+
+        // Auto-detect Kubernetes manifests
+        const hasKubernetesExtractor = extractors.some((e) => e.name === "kubernetes");
+        if (!hasKubernetesExtractor) {
+          const hasK8s = files.some(
+            (f) =>
+              f.includes("k8s/") ||
+              f.includes("kubernetes/") ||
+              f.includes("kube/") ||
+              f.includes("manifests/") ||
+              f.includes("helm/") ||
+              f.includes("charts/") ||
+              (f.endsWith(".yaml") && (f.includes("deploy") || f.includes("service") || f.includes("ingress")))
+          );
+          if (hasK8s) {
+            extractors.push({ name: "kubernetes" });
           }
         }
 
@@ -368,13 +397,14 @@ export const extractionTools: ToolHandler[] = [
 
         try {
           const repoPath = await gm.ensureRepo(repoName, repoConfig.url);
+          const files = await gm.listFilesAtRef(repoPath, ref);
+
+          // Auto-detect and add extractors based on actual file contents
+          let extractors = [...repoConfig.extractors];
 
           // Auto-detect monorepo
-          let extractors = [...repoConfig.extractors];
           const hasMonorepoExtractor = extractors.some((e) => e.name === "monorepo");
-
           if (!hasMonorepoExtractor) {
-            const files = await gm.listFilesAtRef(repoPath, ref);
             const isMonorepo = files.some(
               (f) =>
                 f === "turbo.json" ||
@@ -384,6 +414,35 @@ export const extractionTools: ToolHandler[] = [
             );
             if (isMonorepo) {
               extractors = [{ name: "monorepo" }, ...extractors];
+            }
+          }
+
+          // Auto-detect Terraform files
+          const hasTerraformExtractor = extractors.some((e) => e.name === "terraform");
+          if (!hasTerraformExtractor) {
+            const hasTerraform = files.some(
+              (f) => f.endsWith(".tf") || f.endsWith(".tfvars") || f.includes("terraform")
+            );
+            if (hasTerraform) {
+              extractors.push({ name: "terraform" });
+            }
+          }
+
+          // Auto-detect Kubernetes manifests
+          const hasKubernetesExtractor = extractors.some((e) => e.name === "kubernetes");
+          if (!hasKubernetesExtractor) {
+            const hasK8s = files.some(
+              (f) =>
+                f.includes("k8s/") ||
+                f.includes("kubernetes/") ||
+                f.includes("kube/") ||
+                f.includes("manifests/") ||
+                f.includes("helm/") ||
+                f.includes("charts/") ||
+                (f.endsWith(".yaml") && (f.includes("deploy") || f.includes("service") || f.includes("ingress")))
+            );
+            if (hasK8s) {
+              extractors.push({ name: "kubernetes" });
             }
           }
 

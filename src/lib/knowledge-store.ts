@@ -185,4 +185,17 @@ export class KnowledgeStore {
 
     return toDelete.length;
   }
+
+  async deleteRepo(repo: string): Promise<void> {
+    const repoDir = join(this.baseDir, repo);
+    await fs.rm(repoDir, { recursive: true, force: true });
+  }
+
+  async deleteAll(): Promise<number> {
+    const repos = await this.listRepos();
+    for (const repo of repos) {
+      await this.deleteRepo(repo);
+    }
+    return repos.length;
+  }
 }
