@@ -1,12 +1,12 @@
 /**
- * Diagram generation tools - C4 and Mermaid flowcharts
+ * Diagram generation tools - Mermaid flowcharts
  *
- * Supports native Mermaid C4 diagram types:
- * - C4Context: System Context diagram (high-level)
- * - C4Container: Container diagram (apps/services)
- * - C4Component: Component diagram (internal structure)
- * - C4Dynamic: Dynamic diagram (request flows)
- * - C4Deployment: Deployment diagram (infrastructure)
+ * Supports architecture diagram types (rendered as standard flowcharts):
+ * - context: System Context diagram (high-level)
+ * - container: Container diagram (apps/services)
+ * - component: Component diagram (internal structure)
+ * - dynamic: Dynamic diagram (request flows)
+ * - deployment: Deployment diagram (infrastructure)
  */
 
 import { loadConfig } from "../lib/config-loader.js";
@@ -18,7 +18,6 @@ import {
   getStore,
   sanitize,
   sanitizeLabel,
-  validateC4Diagram,
   isConfigPackage,
   inferCategory,
 } from "./shared.js";
@@ -150,54 +149,56 @@ function getAppDescription(name: string, screens: string[]): string {
 }
 
 // ============================================================================
-// C4 Context Diagram - High-level system overview
+// Context Diagram - High-level system overview (flowchart)
 // ============================================================================
 
-function generateC4Context(
+function generateContextDiagram(
   repoName: string,
   repoLabel: string,
   _monorepo: MonorepoData | null,
   dataFlow: DataFlowData | null
 ): string[] {
   const label = sanitizeLabel(repoLabel);
-  const lines: string[] = ["C4Context"];
-  lines.push(`    title System Context Diagram - ${label}`);
-  lines.push("");
+  const lines: string[] = ["flowchart TB"];
 
   // Users
-  lines.push('    Person(user, "User", "End user of the system")');
-  lines.push('    Person(admin, "Admin", "System administrator")');
+  lines.push('    User(["👤 User"])');
+  lines.push('    Admin(["👤 Admin"])');
   lines.push("");
 
   // Main system
-  lines.push(`    System(${sanitize(repoName)}, "${label}", "The software system")`);
+  lines.push(`    subgraph ${sanitize(repoName)}["🏢 ${label}"]`);
+  lines.push(`        ${sanitize(repoName)}_core["The Software System"]`);
+  lines.push("    end");
   lines.push("");
 
   // External systems
   const externals = getExternalDomains(dataFlow?.externalCalls || []);
   if (externals.length > 0) {
+    lines.push('    subgraph External["🌐 External Systems"]');
     for (const ext of externals) {
       const extLabel = sanitizeLabel(ext);
-      lines.push(`    System_Ext(${sanitize("ext_" + ext)}, "${extLabel}", "External service")`);
+      lines.push(`        ${sanitize("ext_" + ext)}[("${extLabel}")]`);
     }
+    lines.push("    end");
     lines.push("");
   }
 
   // Relationships
-  lines.push(`    Rel(user, ${sanitize(repoName)}, "Uses")`);
-  lines.push(`    Rel(admin, ${sanitize(repoName)}, "Administers")`);
+  lines.push(`    User -->|Uses| ${sanitize(repoName)}`);
+  lines.push(`    Admin -->|Administers| ${sanitize(repoName)}`);
   for (const ext of externals) {
-    lines.push(`    Rel(${sanitize(repoName)}, ${sanitize("ext_" + ext)}, "Calls")`);
+    lines.push(`    ${sanitize(repoName)} -->|Calls| ${sanitize("ext_" + ext)}`);
   }
 
   return lines;
 }
 
 // ============================================================================
-// C4 Container Diagram - Apps/Services within the system
+// Container Diagram - Apps/Services within the system (flowchart)
 // ============================================================================
 
-function generateC4Container(
+function generateContainerDiagram(
   repoName: string,
   repoLabel: string,
   tech: string,
@@ -206,16 +207,14 @@ function generateC4Container(
   dataFlow: DataFlowData | null
 ): string[] {
   const label = sanitizeLabel(repoLabel);
-  const lines: string[] = ["C4Container"];
-  lines.push(`    title Container Diagram - ${label}`);
-  lines.push("");
+  const lines: string[] = ["flowchart TB"];
 
   // Users
-  lines.push('    Person(user, "User", "End user")');
+  lines.push('    User(["👤 User"])');
   lines.push("");
 
   // System boundary
-  lines.push(`    System_Boundary(${sanitize(repoName)}_boundary, "${label}") {`);
+  lines.push(`    subgraph ${sanitize(repoName)}_boundary["🏢 ${label}"]`);
 
   if (monorepo?.detected) {
     const apps = monorepo.apps || monorepo.packages?.filter((p) => p.type === "app") || [];
@@ -230,14 +229,16 @@ function generateC4Container(
       const pkgTech = sanitizeLabel(pkg.framework || tech);
       const appScreens = screensByApp.get(pkg.name) || [];
       const desc = sanitizeLabel(getAppDescription(pkg.name, appScreens));
-      lines.push(`        Container(${node}, "${pkgLabel}", "${pkgTech}", "${desc}")`);
+      lines.push(`        ${node}["🖥️ ${pkgLabel}<br/>${pkgTech}<br/>${desc}"]`);
     }
 
     if (libs.length > 0) {
+      lines.push('        subgraph Libs["📦 Libraries"]');
       for (const lib of libs) {
         const libLabel = sanitizeLabel(lib.name);
-        lines.push(`        Container(${sanitize(lib.name)}, "${libLabel}", "Library", "Shared code")`);
+        lines.push(`            ${sanitize(lib.name)}["${libLabel}"]`);
       }
+      lines.push("        end");
     }
   } else {
     // Non-monorepo
@@ -246,26 +247,34 @@ function generateC4Container(
       const appLabel = sanitizeLabel(app);
       const screenList = screens.slice(0, 3).map((s) => sanitizeLabel(s)).join(", ");
       const desc = screenList + (screens.length > 3 ? "..." : "");
-      lines.push(`        Container(${sanitize("ui_" + app)}, "${appLabel}", "${sanitizeLabel(tech)}", "${desc}")`);
+      lines.push(`        ${sanitize("ui_" + app)}["🖥️ ${appLabel}<br/>${sanitizeLabel(tech)}<br/>${desc}"]`);
     }
 
     const services = dataFlow?.services || [];
-    for (const svc of services.slice(0, 5)) {
-      const svcLabel = sanitizeLabel(svc.name);
-      lines.push(`        Container(${sanitize("svc_" + svc.name)}, "${svcLabel}", "Service", "Backend service")`);
+    if (services.length > 0) {
+      lines.push('        subgraph Services["⚙️ Services"]');
+      for (const svc of services.slice(0, 5)) {
+        const svcLabel = sanitizeLabel(svc.name);
+        lines.push(`            ${sanitize("svc_" + svc.name)}["${svcLabel}"]`);
+      }
+      lines.push("        end");
     }
   }
 
-  lines.push("    }");
+  lines.push("    end");
   lines.push("");
 
   // External systems
   const externals = getExternalDomains(dataFlow?.externalCalls || []);
-  for (const ext of externals) {
-    const extLabel = sanitizeLabel(ext);
-    lines.push(`    System_Ext(${sanitize("ext_" + ext)}, "${extLabel}", "External API")`);
+  if (externals.length > 0) {
+    lines.push('    subgraph External["🌐 External APIs"]');
+    for (const ext of externals) {
+      const extLabel = sanitizeLabel(ext);
+      lines.push(`        ${sanitize("ext_" + ext)}[("${extLabel}")]`);
+    }
+    lines.push("    end");
+    lines.push("");
   }
-  if (externals.length > 0) lines.push("");
 
   // Relationships
   if (monorepo?.detected) {
@@ -274,31 +283,31 @@ function generateC4Container(
 
     for (const pkg of apps) {
       if (!pkg.name.includes("api") && !pkg.name.includes("gateway")) {
-        lines.push(`    Rel(user, ${sanitize(pkg.name)}, "Uses", "HTTPS")`);
+        lines.push(`    User -->|HTTPS| ${sanitize(pkg.name)}`);
       }
     }
 
     if (apiApp) {
       for (const pkg of apps) {
         if (pkg !== apiApp && !pkg.name.includes("api")) {
-          lines.push(`    Rel(${sanitize(pkg.name)}, ${sanitize(apiApp.name)}, "API calls", "REST")`);
+          lines.push(`    ${sanitize(pkg.name)} -->|REST| ${sanitize(apiApp.name)}`);
         }
       }
     }
   }
 
   for (const ext of externals) {
-    lines.push(`    Rel(${sanitize(repoName)}_boundary, ${sanitize("ext_" + ext)}, "Calls")`);
+    lines.push(`    ${sanitize(repoName)}_boundary -->|API| ${sanitize("ext_" + ext)}`);
   }
 
   return lines;
 }
 
 // ============================================================================
-// C4 Component Diagram - Internal structure of a container
+// Component Diagram - Internal structure of a container (flowchart)
 // ============================================================================
 
-function generateC4Component(
+function generateComponentDiagram(
   repoName: string,
   repoLabel: string,
   tech: string,
@@ -307,9 +316,7 @@ function generateC4Component(
   dataFlow: DataFlowData | null
 ): string[] {
   const label = sanitizeLabel(repoLabel);
-  const lines: string[] = ["C4Component"];
-  lines.push(`    title Component Diagram - ${label}`);
-  lines.push("");
+  const lines: string[] = ["flowchart TB"];
 
   if (monorepo?.detected) {
     const apps = monorepo.apps || [];
@@ -319,42 +326,52 @@ function generateC4Component(
     for (const pkg of apps) {
       const pkgLabel = sanitizeLabel(pkg.name);
       const appScreens = screensByApp.get(pkg.name) || [];
-      lines.push(`    Container_Boundary(${sanitize(pkg.name)}_boundary, "${pkgLabel}") {`);
+      lines.push(`    subgraph ${sanitize(pkg.name)}_boundary["📦 ${pkgLabel}"]`);
 
       if (appScreens.length > 0) {
         for (const screen of appScreens.slice(0, 6)) {
           const screenLabel = sanitizeLabel(screen);
-          lines.push(`        Component(${sanitize(pkg.name + "_" + screen)}, "${screenLabel}", "Page", "UI Screen")`);
+          lines.push(`        ${sanitize(pkg.name + "_" + screen)}["📄 ${screenLabel}"]`);
         }
         if (appScreens.length > 6) {
-          lines.push(`        Component(${sanitize(pkg.name)}_more, "+${appScreens.length - 6} more", "Pages", "Additional screens")`);
+          lines.push(`        ${sanitize(pkg.name)}_more["+${appScreens.length - 6} more pages"]`);
         }
       } else {
         const techLabel = sanitizeLabel(pkg.framework || tech);
-        lines.push(`        Component(${sanitize(pkg.name)}_main, "Main", "${techLabel}", "Entry point")`);
+        lines.push(`        ${sanitize(pkg.name)}_main["🚀 Main (${techLabel})"]`);
       }
 
-      lines.push("    }");
+      lines.push("    end");
       lines.push("");
     }
   } else {
     // Non-monorepo: show services as components
     const services = dataFlow?.services || [];
-    lines.push(`    Container_Boundary(${sanitize(repoName)}_boundary, "${label}") {`);
+    lines.push(`    subgraph ${sanitize(repoName)}_boundary["📦 ${label}"]`);
 
-    for (const svc of services) {
-      const svcLabel = sanitizeLabel(svc.name);
-      const deps = svc.dependencies?.slice(0, 2).map((d) => sanitizeLabel(d)).join(", ") || "core";
-      lines.push(`        Component(${sanitize("svc_" + svc.name)}, "${svcLabel}", "Service", "Depends on: ${deps}")`);
+    if (services.length > 0) {
+      lines.push('        subgraph Services["⚙️ Services"]');
+      for (const svc of services) {
+        const svcLabel = sanitizeLabel(svc.name);
+        lines.push(`            ${sanitize("svc_" + svc.name)}["${svcLabel}"]`);
+      }
+      lines.push("        end");
     }
 
     const screens = userFlows?.screens || [];
-    for (const screen of screens.slice(0, 8)) {
-      const screenLabel = sanitizeLabel(screen.name);
-      lines.push(`        Component(${sanitize("screen_" + screen.name)}, "${screenLabel}", "UI", "Screen")`);
+    if (screens.length > 0) {
+      lines.push('        subgraph Screens["📄 Screens"]');
+      for (const screen of screens.slice(0, 8)) {
+        const screenLabel = sanitizeLabel(screen.name);
+        lines.push(`            ${sanitize("screen_" + screen.name)}["${screenLabel}"]`);
+      }
+      if (screens.length > 8) {
+        lines.push(`            screens_more["+${screens.length - 8} more"]`);
+      }
+      lines.push("        end");
     }
 
-    lines.push("    }");
+    lines.push("    end");
   }
 
   // Service dependencies
@@ -365,7 +382,7 @@ function generateC4Component(
         for (const dep of svc.dependencies.slice(0, 2)) {
           const depSvc = dataFlow.services.find((s) => s.name === dep);
           if (depSvc) {
-            lines.push(`    Rel(${sanitize("svc_" + svc.name)}, ${sanitize("svc_" + dep)}, "Calls")`);
+            lines.push(`    ${sanitize("svc_" + svc.name)} --> ${sanitize("svc_" + dep)}`);
           }
         }
       }
@@ -376,10 +393,10 @@ function generateC4Component(
 }
 
 // ============================================================================
-// C4 Dynamic Diagram - Request/interaction flows
+// Dynamic Diagram - Request/interaction flows (flowchart)
 // ============================================================================
 
-function generateC4Dynamic(
+function generateDynamicDiagram(
   repoName: string,
   repoLabel: string,
   monorepo: MonorepoData | null,
@@ -387,11 +404,9 @@ function generateC4Dynamic(
   dataFlow: DataFlowData | null
 ): string[] {
   const label = sanitizeLabel(repoLabel);
-  const lines: string[] = ["C4Dynamic"];
-  lines.push(`    title Dynamic Diagram - ${label} Request Flow`);
-  lines.push("");
+  const lines: string[] = ["flowchart LR"];
 
-  lines.push('    Person(user, "User")');
+  lines.push('    User(["👤 User"])');
   lines.push("");
 
   if (monorepo?.detected) {
@@ -401,41 +416,57 @@ function generateC4Dynamic(
 
     for (const pkg of apps) {
       const pkgLabel = sanitizeLabel(pkg.name);
-      lines.push(`    Container(${sanitize(pkg.name)}, "${pkgLabel}")`);
+      lines.push(`    ${sanitize(pkg.name)}["🖥️ ${pkgLabel}"]`);
     }
     lines.push("");
 
-    // Show typical request flow
+    // Show typical request flow with numbered steps
     let step = 1;
     if (frontendApp) {
-      lines.push(`    Rel(user, ${sanitize(frontendApp.name)}, "${step}. Visits", "HTTPS")`);
+      lines.push(`    User -->|"${step}. Visits"| ${sanitize(frontendApp.name)}`);
       step++;
       if (apiApp) {
-        lines.push(`    Rel(${sanitize(frontendApp.name)}, ${sanitize(apiApp.name)}, "${step}. Fetches data", "API")`);
+        lines.push(`    ${sanitize(frontendApp.name)} -->|"${step}. Fetches data"| ${sanitize(apiApp.name)}`);
         step++;
       }
     }
 
     // External calls
     const externals = getExternalDomains(dataFlow?.externalCalls || []);
-    for (const ext of externals.slice(0, 2)) {
-      const extLabel = sanitizeLabel(ext);
-      lines.push(`    System_Ext(${sanitize("ext_" + ext)}, "${extLabel}")`);
-      if (apiApp) {
-        lines.push(`    Rel(${sanitize(apiApp.name)}, ${sanitize("ext_" + ext)}, "${step}. Calls", "API")`);
-        step++;
+    if (externals.length > 0) {
+      lines.push("");
+      lines.push('    subgraph External["🌐 External"]');
+      for (const ext of externals.slice(0, 2)) {
+        const extLabel = sanitizeLabel(ext);
+        lines.push(`        ${sanitize("ext_" + ext)}[("${extLabel}")]`);
+      }
+      lines.push("    end");
+      lines.push("");
+      for (const ext of externals.slice(0, 2)) {
+        if (apiApp) {
+          lines.push(`    ${sanitize(apiApp.name)} -->|"${step}. Calls API"| ${sanitize("ext_" + ext)}`);
+          step++;
+        }
       }
     }
   } else {
     // Simple request flow for non-monorepo
-    lines.push(`    Container(${sanitize(repoName)}, "${label}")`);
-    lines.push(`    Rel(user, ${sanitize(repoName)}, "1. Uses")`);
+    lines.push(`    ${sanitize(repoName)}["🖥️ ${label}"]`);
+    lines.push(`    User -->|"1. Uses"| ${sanitize(repoName)}`);
 
     const externals = getExternalDomains(dataFlow?.externalCalls || []);
-    for (const [idx, ext] of externals.slice(0, 3).entries()) {
-      const extLabel = sanitizeLabel(ext);
-      lines.push(`    System_Ext(${sanitize("ext_" + ext)}, "${extLabel}")`);
-      lines.push(`    Rel(${sanitize(repoName)}, ${sanitize("ext_" + ext)}, "${idx + 2}. Calls")`);
+    if (externals.length > 0) {
+      lines.push("");
+      lines.push('    subgraph External["🌐 External"]');
+      for (const ext of externals.slice(0, 3)) {
+        const extLabel = sanitizeLabel(ext);
+        lines.push(`        ${sanitize("ext_" + ext)}[("${extLabel}")]`);
+      }
+      lines.push("    end");
+      lines.push("");
+      for (const [idx, ext] of externals.slice(0, 3).entries()) {
+        lines.push(`    ${sanitize(repoName)} -->|"${idx + 2}. Calls"| ${sanitize("ext_" + ext)}`);
+      }
     }
   }
 
@@ -443,10 +474,10 @@ function generateC4Dynamic(
 }
 
 // ============================================================================
-// C4 Deployment Diagram - Infrastructure and deployment
+// Deployment Diagram - Infrastructure and deployment (flowchart)
 // ============================================================================
 
-function generateC4Deployment(
+function generateDeploymentDiagram(
   repoName: string,
   repoLabel: string,
   monorepo: MonorepoData | null,
@@ -454,17 +485,15 @@ function generateC4Deployment(
   terraform: TerraformData | null
 ): string[] {
   const label = sanitizeLabel(repoLabel);
-  const lines: string[] = ["C4Deployment"];
-  lines.push(`    title Deployment Diagram - ${label}`);
-  lines.push("");
+  const lines: string[] = ["flowchart TB"];
 
   const hasK8s = k8s && ((k8s.deployments?.length || 0) > 0 || (k8s.services?.length || 0) > 0);
   const hasTf = terraform && ((terraform.resources || 0) > 0);
 
   if (hasK8s) {
     // Kubernetes deployment
-    lines.push('    Deployment_Node(cloud, "Cloud Provider") {');
-    lines.push('        Deployment_Node(k8s, "Kubernetes Cluster") {');
+    lines.push('    subgraph Cloud["☁️ Cloud Provider"]');
+    lines.push('        subgraph K8s["⎈ Kubernetes Cluster"]');
 
     const namespaces = new Set<string>();
     for (const dep of k8s.deployments || []) {
@@ -473,70 +502,70 @@ function generateC4Deployment(
 
     for (const ns of namespaces) {
       const nsLabel = sanitizeLabel(ns);
-      lines.push(`            Deployment_Node(ns_${sanitize(ns)}, "Namespace: ${nsLabel}") {`);
+      lines.push(`            subgraph ns_${sanitize(ns)}["📁 Namespace: ${nsLabel}"]`);
 
       const nsDeployments = (k8s.deployments || []).filter((d) => (d.namespace || "default") === ns);
       for (const dep of nsDeployments.slice(0, 5)) {
         const depLabel = sanitizeLabel(dep.name);
         const replicas = dep.replicas || 1;
-        lines.push(`                Container(${sanitize("dep_" + dep.name)}, "${depLabel}", "Deployment", "${replicas} replicas")`);
+        lines.push(`                ${sanitize("dep_" + dep.name)}["🚀 ${depLabel}<br/>${replicas} replicas"]`);
       }
 
       const nsServices = (k8s.services || []).slice(0, 3);
       for (const svc of nsServices) {
         const svcLabel = sanitizeLabel(svc.name);
         const ports = svc.ports?.join(", ") || "80";
-        lines.push(`                Container(${sanitize("svc_k8s_" + svc.name)}, "${svcLabel}", "Service", "Ports: ${ports}")`);
+        lines.push(`                ${sanitize("svc_k8s_" + svc.name)}["🔌 ${svcLabel}<br/>Ports: ${ports}"]`);
       }
 
-      lines.push("            }");
+      lines.push("            end");
     }
 
     // Ingresses
     const ingresses = k8s.ingresses || [];
     if (ingresses.length > 0) {
-      lines.push('            Deployment_Node(ingress, "Ingress") {');
+      lines.push('            subgraph Ingress["🌐 Ingress"]');
       for (const ing of ingresses.slice(0, 3)) {
         const ingLabel = sanitizeLabel(ing.name);
         const host = sanitizeLabel(ing.host || "/*");
-        lines.push(`                Container(${sanitize("ing_" + ing.name)}, "${ingLabel}", "Ingress", "${host}")`);
+        lines.push(`                ${sanitize("ing_" + ing.name)}["${ingLabel}<br/>${host}"]`);
       }
-      lines.push("            }");
+      lines.push("            end");
     }
 
-    lines.push("        }");
-    lines.push("    }");
+    lines.push("        end");
+    lines.push("    end");
   } else if (hasTf) {
     // Terraform-based deployment
     const providers = terraform.providers || ["cloud"];
     const providerLabel = sanitizeLabel(providers[0]);
-    lines.push(`    Deployment_Node(cloud, "${providerLabel} Cloud") {`);
+    lines.push(`    subgraph Cloud["☁️ ${providerLabel} Cloud"]`);
 
     if (monorepo?.detected) {
       const apps = monorepo.apps || [];
       for (const pkg of apps) {
         const pkgLabel = sanitizeLabel(pkg.name);
-        lines.push(`        Container(${sanitize(pkg.name)}, "${pkgLabel}", "Deployed App")`);
+        lines.push(`        ${sanitize(pkg.name)}["🚀 ${pkgLabel}"]`);
       }
     } else {
-      lines.push(`        Container(${sanitize(repoName)}, "${label}", "Application")`);
+      lines.push(`        ${sanitize(repoName)}["🚀 ${label}"]`);
     }
 
-    lines.push(`        Container(infra, "Infrastructure", "Terraform", "${terraform.resources || 0} resources")`);
-    lines.push("    }");
+    lines.push(`        infra["🔧 Terraform<br/>${terraform.resources || 0} resources"]`);
+    lines.push("    end");
   } else {
     // Generic deployment (no K8s/TF data)
-    lines.push('    Deployment_Node(cloud, "Cloud") {');
+    lines.push('    subgraph Cloud["☁️ Cloud"]');
     if (monorepo?.detected) {
       const apps = monorepo.apps || [];
       for (const pkg of apps) {
         const pkgLabel = sanitizeLabel(pkg.name);
-        lines.push(`        Container(${sanitize(pkg.name)}, "${pkgLabel}", "Deployed")`);
+        lines.push(`        ${sanitize(pkg.name)}["🚀 ${pkgLabel}"]`);
       }
     } else {
-      lines.push(`        Container(${sanitize(repoName)}, "${label}", "Application")`);
+      lines.push(`        ${sanitize(repoName)}["🚀 ${label}"]`);
     }
-    lines.push("    }");
+    lines.push("    end");
   }
 
   return lines;
@@ -654,7 +683,7 @@ function generateRepoFlowchart(
 export const diagramTools: ToolHandler[] = [
   {
     name: "generate_c4_diagram",
-    description: `Generate C4 architecture diagrams using native Mermaid C4 syntax.
+    description: `Generate architecture diagrams as standard Mermaid flowcharts.
 
 DIAGRAM TYPES:
 - context: System Context - shows system in relation to users and external systems
@@ -735,33 +764,30 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
 
         switch (effectiveDiagramType) {
           case "context":
-            lines = generateC4Context(targetRepo, label, monorepo, dataFlow);
+            lines = generateContextDiagram(targetRepo, label, monorepo, dataFlow);
             break;
           case "component":
-            lines = generateC4Component(targetRepo, label, tech, monorepo, userFlows, dataFlow);
+            lines = generateComponentDiagram(targetRepo, label, tech, monorepo, userFlows, dataFlow);
             break;
           case "dynamic":
-            lines = generateC4Dynamic(targetRepo, label, monorepo, userFlows, dataFlow);
+            lines = generateDynamicDiagram(targetRepo, label, monorepo, userFlows, dataFlow);
             break;
           case "deployment":
-            lines = generateC4Deployment(targetRepo, label, monorepo, k8s, terraform);
+            lines = generateDeploymentDiagram(targetRepo, label, monorepo, k8s, terraform);
             break;
           case "container":
           default:
-            lines = generateC4Container(targetRepo, label, tech, monorepo, userFlows, dataFlow);
+            lines = generateContainerDiagram(targetRepo, label, tech, monorepo, userFlows, dataFlow);
             break;
         }
 
         const mermaid = lines.join("\n");
-        const validation = validateC4Diagram(lines);
 
         return safeJson({
           repo: targetRepo,
           ref: latest.ref,
           type: effectiveDiagramType,
           mermaid,
-          valid: validation.valid,
-          ...(validation.errors.length > 0 && { syntaxErrors: validation.errors }),
           stats: {
             packages: monorepo?.packages?.length || 0,
             screens: userFlows?.screens?.length || 0,
@@ -794,10 +820,8 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
 
       if (ecosystemType === "container") {
         // Ecosystem Container: show all apps/containers across all repos
-        lines = ["C4Container"];
-        lines.push("    title Container Diagram - Platform Overview");
-        lines.push("");
-        lines.push('    Person(user, "User", "End user")');
+        lines = ["flowchart TB"];
+        lines.push('    User(["👤 User"])');
         lines.push("");
 
         for (const repo of mainRepos) {
@@ -811,43 +835,41 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
           const tech = sanitizeLabel(repoConfig?.language || "TypeScript");
           const repoLabel = sanitizeLabel(repo.name);
 
-          lines.push(`    System_Boundary(${sanitize(repo.name)}_boundary, "${repoLabel}") {`);
+          lines.push(`    subgraph ${sanitize(repo.name)}_boundary["🏢 ${repoLabel}"]`);
 
           if (monorepo?.detected) {
             const apps = monorepo.apps || monorepo.packages?.filter((p) => p.type === "app") || [];
             for (const pkg of apps.slice(0, 4)) {
               const pkgLabel = sanitizeLabel(pkg.name);
               const pkgTech = sanitizeLabel(pkg.framework || tech);
-              lines.push(`        Container(${sanitize(repo.name + "_" + pkg.name)}, "${pkgLabel}", "${pkgTech}")`);
+              lines.push(`        ${sanitize(repo.name + "_" + pkg.name)}["🖥️ ${pkgLabel}<br/>${pkgTech}"]`);
             }
             if (apps.length > 4) {
-              lines.push(`        Container(${sanitize(repo.name)}_more, "+${apps.length - 4} more", "Apps")`);
+              lines.push(`        ${sanitize(repo.name)}_more["+${apps.length - 4} more apps"]`);
             }
           } else {
-            lines.push(`        Container(${sanitize(repo.name)}_main, "${repoLabel}", "${tech}")`);
+            lines.push(`        ${sanitize(repo.name)}_main["🖥️ ${repoLabel}<br/>${tech}"]`);
           }
 
-          lines.push("    }");
+          lines.push("    end");
           lines.push("");
         }
 
         // User relationships
         for (const repo of frontends) {
-          lines.push(`    Rel(user, ${sanitize(repo.name)}_boundary, "Uses")`);
+          lines.push(`    User -->|Uses| ${sanitize(repo.name)}_boundary`);
         }
 
         // Frontend -> Backend relationships
         for (const fe of frontends) {
           for (const be of backends) {
-            lines.push(`    Rel(${sanitize(fe.name)}_boundary, ${sanitize(be.name)}_boundary, "API")`);
+            lines.push(`    ${sanitize(fe.name)}_boundary -->|API| ${sanitize(be.name)}_boundary`);
           }
         }
 
       } else if (ecosystemType === "deployment") {
         // Ecosystem Deployment: aggregate K8s/TF across all repos
-        lines = ["C4Deployment"];
-        lines.push("    title Deployment Diagram - Platform Infrastructure");
-        lines.push("");
+        lines = ["flowchart TB"];
 
         const allK8s: Array<{ repo: string; data: K8sData }> = [];
         const allTf: Array<{ repo: string; data: TerraformData }> = [];
@@ -870,93 +892,108 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
         }
 
         if (allK8s.length > 0) {
-          lines.push('    Deployment_Node(k8s_cluster, "Kubernetes Cluster") {');
+          lines.push('    subgraph K8s["⎈ Kubernetes Cluster"]');
 
           for (const { repo, data } of allK8s) {
             const repoLabel = sanitizeLabel(repo);
-            lines.push(`        Deployment_Node(${sanitize(repo)}_ns, "${repoLabel}") {`);
+            lines.push(`        subgraph ${sanitize(repo)}_ns["📁 ${repoLabel}"]`);
             for (const dep of (data.deployments || []).slice(0, 3)) {
               const depLabel = sanitizeLabel(dep.name);
-              lines.push(`            Container(${sanitize(repo + "_" + dep.name)}, "${depLabel}", "Deployment")`);
+              lines.push(`            ${sanitize(repo + "_" + dep.name)}["🚀 ${depLabel}"]`);
             }
-            lines.push("        }");
+            lines.push("        end");
           }
 
-          lines.push("    }");
+          lines.push("    end");
           lines.push("");
         }
 
         if (allTf.length > 0) {
           const providers = [...new Set(allTf.flatMap((t) => t.data.providers || []))];
           const providerName = sanitizeLabel(providers[0] || "Cloud");
-          lines.push(`    Deployment_Node(cloud, "${providerName}") {`);
+          lines.push(`    subgraph Cloud["☁️ ${providerName}"]`);
 
           for (const { repo, data } of allTf) {
             const repoLabel = sanitizeLabel(repo);
-            lines.push(`        Container(${sanitize(repo)}_infra, "${repoLabel}", "Terraform", "${data.resources || 0} resources")`);
+            lines.push(`        ${sanitize(repo)}_infra["🔧 ${repoLabel}<br/>Terraform: ${data.resources || 0} resources"]`);
           }
 
-          lines.push("    }");
+          lines.push("    end");
         }
 
         if (allK8s.length === 0 && allTf.length === 0) {
           // No infra data - show generic deployment
-          lines.push('    Deployment_Node(cloud, "Cloud") {');
+          lines.push('    subgraph Cloud["☁️ Cloud"]');
           for (const repo of mainRepos) {
             const repoLabel = sanitizeLabel(repo.name);
-            lines.push(`        Container(${sanitize(repo.name)}, "${repoLabel}", "Deployed")`);
+            lines.push(`        ${sanitize(repo.name)}["🚀 ${repoLabel}"]`);
           }
-          lines.push("    }");
+          lines.push("    end");
         }
 
       } else {
-        // Default: C4Context - high level system overview
-        lines = ["C4Context"];
-        lines.push("    title System Context - Platform Overview");
-        lines.push("");
-        lines.push('    Person(user, "User", "End user of the platform")');
+        // Default: Context - high level system overview
+        lines = ["flowchart TB"];
+        lines.push('    User(["👤 User"])');
         lines.push("");
 
-        for (const repo of frontends) {
-          const repoLabel = sanitizeLabel(repo.name);
-          lines.push(`    System(${sanitize(repo.name)}, "${repoLabel}", "Frontend Application")`);
+        if (frontends.length > 0) {
+          lines.push('    subgraph Frontends["🖥️ Frontend Applications"]');
+          for (const repo of frontends) {
+            const repoLabel = sanitizeLabel(repo.name);
+            lines.push(`        ${sanitize(repo.name)}["${repoLabel}"]`);
+          }
+          lines.push("    end");
+          lines.push("");
         }
-        for (const repo of backends) {
-          const repoLabel = sanitizeLabel(repo.name);
-          lines.push(`    System(${sanitize(repo.name)}, "${repoLabel}", "Backend Service")`);
+
+        if (backends.length > 0) {
+          lines.push('    subgraph Backends["⚙️ Backend Services"]');
+          for (const repo of backends) {
+            const repoLabel = sanitizeLabel(repo.name);
+            lines.push(`        ${sanitize(repo.name)}["${repoLabel}"]`);
+          }
+          lines.push("    end");
+          lines.push("");
         }
-        for (const repo of infra) {
-          const repoLabel = sanitizeLabel(repo.name);
-          lines.push(`    System(${sanitize(repo.name)}, "${repoLabel}", "Infrastructure")`);
+
+        if (infra.length > 0) {
+          lines.push('    subgraph Infrastructure["🔧 Infrastructure"]');
+          for (const repo of infra) {
+            const repoLabel = sanitizeLabel(repo.name);
+            lines.push(`        ${sanitize(repo.name)}["${repoLabel}"]`);
+          }
+          lines.push("    end");
+          lines.push("");
         }
-        for (const repo of others) {
-          const repoLabel = sanitizeLabel(repo.name);
-          lines.push(`    System(${sanitize(repo.name)}, "${repoLabel}", "System")`);
+
+        if (others.length > 0) {
+          lines.push('    subgraph Other["📦 Other"]');
+          for (const repo of others) {
+            const repoLabel = sanitizeLabel(repo.name);
+            lines.push(`        ${sanitize(repo.name)}["${repoLabel}"]`);
+          }
+          lines.push("    end");
+          lines.push("");
         }
-        lines.push("");
 
         // User relationships
-        for (const repo of frontends) {
-          lines.push(`    Rel(user, ${sanitize(repo.name)}, "Uses")`);
+        if (frontends.length > 0) {
+          lines.push("    User -->|Uses| Frontends");
         }
 
         // Frontend -> Backend relationships
-        for (const fe of frontends) {
-          for (const be of backends) {
-            lines.push(`    Rel(${sanitize(fe.name)}, ${sanitize(be.name)}, "API calls")`);
-          }
+        if (frontends.length > 0 && backends.length > 0) {
+          lines.push("    Frontends -->|API calls| Backends");
         }
       }
 
       const mermaid = lines.join("\n");
-      const validation = validateC4Diagram(lines);
 
       return safeJson({
         mode: "ecosystem",
         type: ecosystemType,
         mermaid,
-        valid: validation.valid,
-        ...(validation.errors.length > 0 && { syntaxErrors: validation.errors }),
         repos: mainRepos.map((r) => ({
           name: r.name,
           category: inferCategory(r.name, config.repositories[r.name]?.type),

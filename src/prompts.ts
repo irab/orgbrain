@@ -141,7 +141,7 @@ Note: This requires GitHub CLI (gh) to be authenticated. If you get an auth erro
 
 3. Generate architecture diagrams:
    - Call generate_diagram with repo="${sanitizedRepo}" for a flowchart view
-   - Call generate_c4_diagram with repo="${sanitizedRepo}" and level="container" for C4 view
+   - Call generate_c4_diagram with repo="${sanitizedRepo}" and type="container" for a detailed architecture view
 
 4. Analyze the extracted data:
    - Check user_flows for screens/pages
@@ -177,9 +177,9 @@ Note: This requires GitHub CLI (gh) to be authenticated. If you get an auth erro
 1. Start by listing all repositories with list_repos
 
 2. Generate ecosystem-level diagrams:
-   - Call generate_c4_diagram with level="context" for high-level view
-   - Call generate_c4_diagram with level="container" for detailed view
-   - Call generate_diagram for a Mermaid flowchart
+   - Call generate_c4_diagram with type="context" for high-level view
+   - Call generate_c4_diagram with type="container" for detailed view
+   - Call generate_diagram for an ecosystem flowchart
 
 3. Analyze cross-cutting concerns:
    - Call query_data_flow to understand service dependencies

@@ -138,7 +138,7 @@ export function sanitize(s: string): string {
 }
 
 /**
- * Sanitize string for use in C4 diagram labels
+ * Sanitize string for use in Mermaid diagram labels
  * Escapes quotes and special characters that break Mermaid parsing
  */
 export function sanitizeLabel(s: string): string {
@@ -149,53 +149,6 @@ export function sanitizeLabel(s: string): string {
     .replace(/\s+/g, " ") // Collapse multiple spaces
     .trim()
     .slice(0, 100); // Limit length
-}
-
-/**
- * Validate a Mermaid C4 diagram for common syntax errors
- */
-export function validateC4Diagram(lines: string[]): { valid: boolean; errors: string[] } {
-  const errors: string[] = [];
-  const diagramTypes = ["C4Context", "C4Container", "C4Component", "C4Dynamic", "C4Deployment"];
-
-  if (lines.length === 0) {
-    errors.push("Empty diagram");
-    return { valid: false, errors };
-  }
-
-  // Check diagram type declaration
-  const firstLine = lines[0].trim();
-  if (!diagramTypes.includes(firstLine)) {
-    errors.push(`Invalid diagram type: ${firstLine}. Must be one of: ${diagramTypes.join(", ")}`);
-  }
-
-  // Check for balanced braces
-  let braceCount = 0;
-  for (const line of lines) {
-    braceCount += (line.match(/\{/g) || []).length;
-    braceCount -= (line.match(/\}/g) || []).length;
-  }
-  if (braceCount !== 0) {
-    errors.push(`Unbalanced braces: ${braceCount > 0 ? "missing closing" : "extra closing"} brace(s)`);
-  }
-
-  // Check for balanced parentheses in element declarations
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const parenOpen = (line.match(/\(/g) || []).length;
-    const parenClose = (line.match(/\)/g) || []).length;
-    if (parenOpen !== parenClose) {
-      errors.push(`Line ${i + 1}: Unbalanced parentheses`);
-    }
-
-    // Check for unescaped quotes in labels
-    const quoteCount = (line.match(/"/g) || []).length;
-    if (quoteCount % 2 !== 0) {
-      errors.push(`Line ${i + 1}: Unbalanced quotes`);
-    }
-  }
-
-  return { valid: errors.length === 0, errors };
 }
 
 /**

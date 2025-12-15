@@ -123,8 +123,8 @@ export const toolHandlers: ToolHandler[] = [
             examples: [
               'generate_c4_diagram() - ecosystem overview of all repos',
               'generate_c4_diagram(repo: "my-app") - detailed view of repo internals (apps, packages, services)',
-              'generate_c4_diagram(repo: "my-app", level: "context") - high-level system context',
-              'generate_diagram(repo: "my-app") - Mermaid flowchart of repo structure',
+              'generate_c4_diagram(repo: "my-app", type: "context") - high-level system context',
+              'generate_diagram(repo: "my-app") - flowchart of repo structure',
             ],
           },
           explore: {
