@@ -1,18 +1,21 @@
 # OrgBrain MCP Server
 
-A reusable Model Context Protocol (MCP) server that can host tools and run a knowledge-extraction pipeline across multiple repositories (NIP usage, user flows, data flow, Kubernetes, Terraform, journey impact, etc.). This is the de-branded, org-agnostic build with the full toolset exposed.
+A reusable Model Context Protocol (MCP) server that provides knowledge-extraction and cross-repo analysis tools for multi-repository organizations. Extract type definitions, user flows, service dependencies, infrastructure configs, and more — then query across your entire codebase.
 
 ## Features
-- Org-wide: built to inventory and analyze many repos across an org; helper script to add all repos from a GitHub org.
-- Config-driven: point the server to a YAML file of repos to analyze.
-- Pluggable extractors: register new extractors in `src/extractors/` and wire them via config.
-- Version-aware tools: list refs, aggregate NIP usage, user flows, data flow, infra, and diagrams across repos.
-- Knowledge store: versioned JSON under `knowledge/extracted/` with manifests per repo/ref.
-- Infra-aware: Kubernetes extractor maps env → cluster → namespace → apps (best effort from ArgoCD/helm paths).
-- Journey-aware: optional journey/impact extractor links journey docs to screens and services when present.
-- Ready for local dev (`pnpm dev`) or compiled output (`pnpm build && pnpm start`).
+
+- **Org-wide analysis**: Inventory and analyze many repos across an org; helper script to add all repos from a GitHub org.
+- **Cross-repo type mapping**: Extract data structures across languages (Rust, TypeScript, Python, Go, Dart) and find shared types between services.
+- **Config-driven**: Point the server to a YAML file of repos to analyze.
+- **Pluggable extractors**: Register new extractors in `src/extractors/` and wire them via config.
+- **Version-aware tools**: List refs, aggregate types, user flows, data flow, infra, and diagrams across repos.
+- **Knowledge store**: Versioned JSON under `knowledge/extracted/` with manifests per repo/ref.
+- **Infra-aware**: Kubernetes and Terraform extractors map infrastructure resources.
+- **Journey-aware**: Optional journey/impact extractor links journey docs to screens and services.
+- **Ready for local dev** (`pnpm dev`) or compiled output (`pnpm build && pnpm start`).
 
 ## Quickstart
+
 Requirements: Node.js 18+ and pnpm. For org bootstrap: [GitHub CLI (`gh`)](https://cli.github.com/) authenticated.
 
 ```bash
@@ -149,13 +152,30 @@ repositories:
 
 ### Extractor Configurations
 
-#### `nip_usage` - Nostr NIP Detection
+#### `type_definitions` - Data Structures & Cross-Repo Contracts
+
+Extracts structs, classes, interfaces, enums, and type aliases across multiple languages. Enables cross-repo type matching to identify shared data contracts between services.
+
+**Supported languages:** Rust, TypeScript, Python, Go, Dart, Protobuf
+
+**Bonus detection:**
+- Zod schemas (TypeScript)
+- ORM models: Django, SQLAlchemy, GORM, TypeORM, Drizzle, Prisma
+
 ```yaml
-- name: nip_usage
+- name: type_definitions
   config:
-    patterns: ["NIP-\\d+", "kind:\\s*\\d+"]  # Regex patterns to search
-    file_types: ["ts", "js", "rs", "dart", "md"]  # File extensions to scan
+    ignore: ["**/generated/**", "**/migrations/**"]  # Patterns to skip
+    limit: 300                                        # Max files to process
+    includePrivate: true                              # Include non-public types
+    prioritize: ["src/models/", "src/types/"]         # Directories to process first
 ```
+
+**Output includes:**
+- Type definitions with fields, variants, generics
+- Relationships (extends, implements, contains, collection)
+- Module groupings for diagram generation
+- Summary statistics by kind/language
 
 #### `user_flows` - UI Screens & Navigation
 ```yaml
@@ -197,23 +217,45 @@ repositories:
   # No config options - scans docs/, flows/, journey files
 ```
 
+#### `nip_usage` - Nostr NIP Detection
+```yaml
+- name: nip_usage
+  config:
+    patterns: ["NIP-\\d+", "kind:\\s*\\d+"]  # Regex patterns to search
+    file_types: ["ts", "js", "rs", "dart", "md"]  # File extensions to scan
+```
+
 ### Example Configurations
 
-#### Nostr Project
+#### Backend API with Type Extraction
 ```yaml
-nostr-client:
-  url: git@github.com:org/nostr-client.git
-  type: frontend
-  language: dart
+api-service:
+  url: git@github.com:org/api-service.git
+  type: backend
+  language: rust
   default_branch: main
   track:
     branches: [main]
-    tags: { pattern: "v*", latest: 3 }
+    tags: { pattern: "v*", latest: 5 }
   extractors:
-    - name: nip_usage
+    - name: type_definitions
       config:
-        patterns: ["NIP-\\d+", "kind:\\s*\\d+"]
-        file_types: ["dart", "md"]
+        prioritize: ["src/models/", "src/api/"]
+    - name: data_flow
+    - name: journey_impact
+```
+
+#### Frontend App
+```yaml
+web-client:
+  url: git@github.com:org/web-client.git
+  type: frontend
+  language: typescript
+  default_branch: main
+  track:
+    branches: [main, develop]
+  extractors:
+    - name: type_definitions
     - name: user_flows
     - name: data_flow
     - name: journey_impact
@@ -230,6 +272,7 @@ my-monorepo:
     branches: [main, develop]
   extractors:
     - name: monorepo
+    - name: type_definitions
     - name: user_flows
       config:
         ignore: ["**/node_modules/**", "**/*.test.*"]
@@ -254,20 +297,18 @@ platform-infra:
     - name: journey_impact
 ```
 
-#### Backend API
+#### Multi-Language Service (with Protobuf)
 ```yaml
-api-service:
-  url: git@github.com:org/api-service.git
+data-service:
+  url: git@github.com:org/data-service.git
   type: backend
   language: go
   default_branch: main
-  track:
-    branches: [main]
-    tags: { pattern: "v*", latest: 5 }
   extractors:
+    - name: type_definitions
+      config:
+        prioritize: ["proto/", "internal/models/"]
     - name: data_flow
-    - name: kubernetes
-    - name: journey_impact
 ```
 
 ## CLI Commands
@@ -309,11 +350,8 @@ pnpm add:org-repos <org-name> -i
 # Start fresh - clear existing config first
 pnpm add:org-repos <org-name> --reset
 
-# Include NIP extractor (for Nostr projects)
-pnpm add:org-repos <org-name> --nips
-
 # Specify exact extractors
-pnpm add:org-repos <org-name> --extractors user_flows,data_flow,kubernetes
+pnpm add:org-repos <org-name> --extractors user_flows,data_flow,type_definitions
 
 # Use HTTPS URLs instead of SSH
 pnpm add:org-repos <org-name> --https
@@ -340,57 +378,75 @@ When using `add:org-repos`, extractors are auto-selected based on repo type:
 | Infrastructure | `monorepo`, `kubernetes`, `terraform`, `journey_impact` |
 | Unknown | `monorepo`, `user_flows`, `data_flow`, `kubernetes`, `terraform`, `journey_impact` |
 
-Use `--nips` to add `nip_usage` extractor, or `--extractors` for full control.
+Use `--extractors` for full control over which extractors to enable.
 
 > **Note:** When you disable a repo in config, its extracted data remains until you run `--prune`. The MCP server automatically filters out disabled repos from query results.
 
-### Interactive repo selection
-
-Use `-i` or `--interactive` to choose which repos to include:
-
-```bash
-pnpm add:org-repos my-org -i
-```
-
-This shows a checkbox UI where you can:
-- **Space** to toggle repos on/off
-- **Enter** to confirm
-
-Repos marked as disabled get `enabled: false` in the config and are skipped during extraction.
-
-Extractors live in `src/extractors/` and register themselves on import via `registerExtractor`. Included:
-- `nip_usage` - Nostr NIP references and event kinds
-- `user_flows` - UI screens and navigation
-- `data_flow` - Service dependencies and HTTP calls
-- `monorepo` - Turborepo/pnpm/npm workspace structure, packages, internal deps
-- `kubernetes` - K8s manifests, ArgoCD apps, services
-- `terraform` - TF resources, modules, providers
-- `journey_impact` - Journey docs to screens/services mapping
-
-## MCP Resources
-
-The server exposes knowledge files as MCP Resources that clients can browse and read directly:
-
-| Resource URI | Description |
-|--------------|-------------|
-| `knowledge://index` | Index of all available knowledge |
-| `knowledge://extracted/{repo}/{ref}/{extractor}` | Extracted data (e.g., `knowledge://extracted/my-app/branch-main/user_flows`) |
-| `knowledge://static/{path}` | Static knowledge files (markdown, matrices) |
-
-**Example URIs:**
-```
-knowledge://index
-knowledge://extracted/example-repo/branch-main/user_flows
-knowledge://extracted/example-repo/branch-main/terraform
-knowledge://static/matrices/nip-usage.json
-```
-
 ## Tools
-Tools are registered in `src/index.ts` from two bundles:
-- Legacy/utility (`src/tools.ts`): `health_check`, `search_knowledge`, `list_knowledge`, `get_resource`, `get_nip_details`, `find_nip_in_extracted`.
-- Version-aware (`src/tools/`): `list_repos`, `list_refs`, `query_nips`, `query_flows`, `query_monorepos`, `query_data_flow`, `query_infra`, `compare_versions`, `diff_versions`, `extract_ref`, `extract_all`, `generate_diagram`, `generate_c4_diagram`, `connect_org`, `disconnect_repo`, `toggle_repo`, `job_status`.
+
+Tools are registered in `src/index.ts` from multiple modules:
+
+### Query Tools
+- `list_repos` - List repos with their latest extracted ref
+- `list_refs` - List branches and tags for each repo
+- `query_nips` - Aggregate NIP usage across repos
+- `query_flows` - Aggregate user flows/screens
+- `query_monorepos` - Aggregate monorepo structure
+- `query_data_flow` - Aggregate service dependencies
+- `query_infra` - Aggregate Kubernetes and Terraform data
+
+### Type Analysis Tools
+- `query_types` - Search type definitions across repos by name, kind, or repo
+- `query_shared_types` - **Find types that appear in multiple repos** (identifies shared data contracts)
+- `query_type_relationships` - Get type relationships within a repo (extends, contains, implements)
+- `generate_type_flow_diagram` - Generate Mermaid diagram showing cross-repo type flow
+
+### Diagram Tools
+- `generate_diagram` - Generate Mermaid flowchart for repo or ecosystem
+- `generate_c4_diagram` - Generate C4-style architecture diagrams (context, container, component, dynamic, deployment)
+
+### Extraction Tools
+- `extract_ref` - Extract a specific ref for a repo
+- `extract_all` - Extract all enabled repos
+
+### Comparison Tools
+- `compare_versions` - List available versions for comparison
+- `diff_versions` - Compare extractors between refs
+
+### Org Management Tools
+- `connect_org` - Add repos from a GitHub org
+- `disconnect_repo` - Remove a repo from config
+- `toggle_repo` - Enable/disable a repo
+- `job_status` - Check extraction job status
+
+### Cross-Repo Type Analysis Example
+
+```
+# Find shared types between your services
+query_shared_types()
+
+# Result shows types appearing in multiple repos:
+{
+  "sharedTypes": [
+    {
+      "name": "user",
+      "similarity": 85,
+      "repos": ["api-service", "web-client", "mobile-app"],
+      "instances": [
+        { "repo": "api-service", "kind": "struct", "language": "rust" },
+        { "repo": "web-client", "kind": "interface", "language": "typescript" },
+        { "repo": "mobile-app", "kind": "class", "language": "dart" }
+      ]
+    }
+  ]
+}
+
+# Generate a diagram showing type flow between repos
+generate_type_flow_diagram()
+```
 
 ### On-Demand Extraction
+
 The MCP client can trigger extraction directly without running the CLI:
 
 ```
@@ -406,49 +462,122 @@ extract_all(force: true, repos: ["my-app", "my-backend"])
 Results are stored in `knowledge/extracted/` and immediately available for queries. Cached data is returned if fresh (<24h) unless `force: true`.
 
 ### Diff / Compare Versions
+
 Use `compare_versions` to see available refs, then `diff_versions` to compare:
 
 ```
 diff_versions(from_ref: "v1.0.0", to_ref: "main")
 diff_versions(from_ref: "v1.0.0", to_ref: "v2.0.0", repo: "my-app")
-diff_versions(from_ref: "main", to_ref: "develop", extractor: "nip_usage")
+diff_versions(from_ref: "main", to_ref: "develop", extractor: "type_definitions")
 ```
 
 Returns:
 - **Per-repo diffs**: which extractors changed and what was added/removed
-- **Aggregated ecosystem diff**: NIPs, event kinds, screens, services, K8s resources across all repos
+- **Aggregated ecosystem diff**: types, screens, services, K8s resources across all repos
 - **Mermaid diagram**: visual representation of the diff
 
-Add your own tools by extending either file and wiring them in `src/index.ts`.
+## MCP Resources
+
+The server exposes knowledge files as MCP Resources that clients can browse and read directly:
+
+| Resource URI | Description |
+|--------------|-------------|
+| `knowledge://index` | Index of all available knowledge |
+| `knowledge://extracted/{repo}/{ref}/{extractor}` | Extracted data (e.g., `knowledge://extracted/my-app/branch-main/type_definitions`) |
+| `knowledge://static/{path}` | Static knowledge files (markdown, matrices) |
+
+**Example URIs:**
+```
+knowledge://index
+knowledge://extracted/example-repo/branch-main/type_definitions
+knowledge://extracted/example-repo/branch-main/user_flows
+knowledge://static/matrices/nip-usage.json
+```
 
 ## Adding your own extractor
-1) Create a file in `src/extractors/` that exports an `Extractor` and calls `registerExtractor` (see `nip-usage.ts` as a template). Implement `canExtract` (lightweight file check) and `extract` (do the work, return `ExtractionResult`).
+
+1) Create a file in `src/extractors/` that exports an `Extractor` and calls `registerExtractor` (see existing extractors as templates). Implement `canExtract` (lightweight file check) and `extract` (do the work, return `ExtractionResult`).
+
 2) Import your file in `src/extractors/index.ts` so it registers at startup.
+
 3) Add the extractor to any repo in `config/repos.yaml` under `repositories.<name>.extractors`, with optional `config` passed to your extractor.
+
 4) Run `pnpm build:knowledge` to generate knowledge; results appear under `knowledge/extracted/<repo>/<ref>/your_extractor.json`.
 
 Keep extractors fast; use `gitManager` helpers for file listing/grep at refs, and limit file counts to avoid timeouts.
 
 ## Project structure
-- `src/index.ts`: server entrypoint; registers tools from `src/tools.ts` and `src/tools/`.
-- `src/lib/config-loader.ts`: YAML config loader + helpers.
-- `src/lib/git-manager.ts`: git helpers for clone/fetch/list/grep.
-- `src/lib/extractor-base.ts`: extractor interface/registry.
-- `src/lib/extraction-runner.ts`: orchestrates extractors over refs.
-- `src/lib/knowledge-store.ts`: versioned knowledge storage.
-- `src/extractors/app/`: app-level extractors (user flows, NIP usage, data flow).
-- `src/extractors/infra/`: infra extractors (Terraform, Kubernetes).
-- `src/extractors/architecture/`: journey impact extractor.
-- `scripts/build-knowledge.ts`: CLI to build/list knowledge.
-- `scripts/add-org-repos.ts`: helper to add all repos from a GitHub org to config.
-- `config/example.repos.yaml`: sample config (copy to `config/repos.yaml`).
-- `examples/`: usage notes.
+
+```
+src/
+├── index.ts                    # Server entrypoint
+├── lib/
+│   ├── config-loader.ts        # YAML config loader
+│   ├── git-manager.ts          # Git helpers (clone/fetch/list/grep)
+│   ├── extractor-base.ts       # Extractor interface/registry
+│   ├── extraction-runner.ts    # Orchestrates extractors
+│   └── knowledge-store.ts      # Versioned knowledge storage
+├── extractors/
+│   ├── index.ts                # Registers all extractors
+│   ├── app/                    # App-level extractors
+│   │   ├── user-flows.ts
+│   │   ├── data-flow.ts
+│   │   ├── nip-usage.ts
+│   │   └── monorepo.ts
+│   ├── infra/                  # Infrastructure extractors
+│   │   ├── kubernetes.ts
+│   │   └── terraform.ts
+│   ├── architecture/           # Architecture extractors
+│   │   └── journey-impact.ts
+│   └── types/                  # Type definition extractor
+│       ├── index.ts            # Main extractor
+│       ├── schema.ts           # Type definitions & helpers
+│       └── parsers/            # Language-specific parsers
+│           ├── index.ts        # Parser registry
+│           ├── rust.ts
+│           ├── typescript.ts
+│           ├── python.ts
+│           ├── go.ts
+│           ├── dart.ts
+│           ├── protobuf.ts
+│           ├── zod.ts          # Zod schema detection
+│           └── orm.ts          # ORM model detection
+├── tools/
+│   ├── index.ts                # Tool aggregator
+│   ├── queries.ts              # Query tools
+│   ├── diagrams.ts             # Diagram generation
+│   ├── extraction.ts           # On-demand extraction
+│   ├── comparison.ts           # Version comparison
+│   ├── org.ts                  # Org management
+│   └── types.ts                # Type analysis tools
+├── prompts.ts                  # MCP prompts
+└── resources.ts                # MCP resources
+
+scripts/
+├── build-knowledge.ts          # CLI for knowledge extraction
+└── add-org-repos.ts            # Add repos from GitHub org
+
+config/
+├── example.repos.yaml          # Sample config
+└── repos.yaml                  # Your config (gitignored)
+
+knowledge/
+└── extracted/                  # Extracted knowledge (gitignored)
+    └── {repo}/
+        └── branch-{ref}/
+            ├── manifest.json
+            ├── type_definitions.json
+            ├── user_flows.json
+            └── ...
+```
 
 ## Contributing / Extending
-- Add new tools in `src/lib/router.ts`.
-- Add new extractors in `src/extractors/` and wire them in config.
-- If your tools need extra services (git, DB, etc.), keep the wiring in `src/lib` and inject via the router.
-- Please keep sample configs free of sensitive data.
+
+- Add new tools in `src/tools/` and register in `src/tools/index.ts`.
+- Add new extractors in `src/extractors/` and import in `src/extractors/index.ts`.
+- For the type extractor, add new language parsers in `src/extractors/types/parsers/`.
+- Keep sample configs free of sensitive data.
 
 ## License
+
 MIT (see `LICENSE`).

@@ -6,6 +6,7 @@ import "./app/monorepo.js";
 import "./infra/terraform.js";
 import "./infra/kubernetes.js";
 import "./architecture/journey-impact.js";
+import "./types/index.js";
 
 // Re-export registry helpers
 export * from "../lib/extractor-base.js";
