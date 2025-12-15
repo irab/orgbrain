@@ -87,15 +87,21 @@ export async function registerPrompts(server: McpServer): Promise<void> {
 
 1. Call connect_org with org="${sanitizedOrg}"${includeNips ? " and include_nips=true" : ""}
 
-2. After connecting, show a summary of:
+2. The connect_org job runs in the background (cloning repos can take a while).
+   - Use job_status to check progress
+   - IMPORTANT: Wait ~10 seconds between status checks to avoid spamming
+   - The job has 5 phases: fetching repos, writing config, clearing old data, cloning repos, extracting knowledge
+   - Large monorepos may take several minutes to clone and extract
+
+3. Once the job completes, show a summary of:
    - How many repos were added
    - How many were auto-disabled (test/demo repos)
    - The breakdown by type (frontend, backend, etc.)
 
-3. Ask if I want to:
-   - Extract knowledge from all repos now (extract_all)
+4. Ask if I want to:
    - See the architecture diagram (generate_diagram)
    - Enable/disable specific repos (toggle_repo)
+   - Analyze a specific repo (analyze-repo prompt)
 
 Note: This requires GitHub CLI (gh) to be authenticated. If you get an auth error, run 'gh auth login' first.`,
             },
