@@ -6,12 +6,16 @@ import { spawn } from "child_process";
 import { promises as fs } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import pLimit from "p-limit";
 import YAML from "yaml";
 import { ToolHandler, safeJson, getStore, getGitManager } from "./shared.js";
 import { runExtractors } from "../lib/extractor-base.js";
 import "../extractors/index.js"; // Register all extractors
 import { clearConfigCache } from "../lib/config-loader.js";
 import { createJob, getJob, updateJob, listJobs, listActiveJobs, type Job } from "../lib/job-manager.js";
+
+// Concurrency limit for parallel repo extraction in connect_org
+const REPO_CONCURRENCY = 4;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -358,7 +362,7 @@ async function runConnectOrg(job: Job, options: ConnectOrgOptions): Promise<void
     await saveConfigFile(config);
     clearConfigCache();
 
-    // Step 5: Extract knowledge from all enabled repos
+    // Step 5: Extract knowledge from all enabled repos (in parallel)
     const enabledRepos = repos.filter((r) => {
       const repoConfig = config.repositories[r.name];
       return repoConfig && repoConfig.enabled !== false;
@@ -373,21 +377,49 @@ async function runConnectOrg(job: Job, options: ConnectOrgOptions): Promise<void
       error?: string;
     }> = [];
 
-    for (let i = 0; i < enabledRepos.length; i++) {
-      const repo = enabledRepos[i];
-      const repoConfig = config.repositories[repo.name];
-      const ref = repoConfig.default_branch || "main";
+    // Track progress for parallel extraction
+    let completedCount = 0;
+    let failedCount = 0;
+    const activeRepos = new Map<string, { startedAt: Date; status: string }>();
+    const limit = pLimit(REPO_CONCURRENCY);
+
+    const updateProgress = () => {
+      const active = Array.from(activeRepos.entries()).map(([name, info]) => ({
+        name,
+        status: info.status,
+        startedAt: info.startedAt.toISOString(),
+      }));
 
       updateJob(job.id, {
         progress: {
           current: 4,
           total: 5,
-          message: `Extracting ${i + 1}/${enabledRepos.length}: ${repo.name}...`,
+          message: `Extracting repos (${REPO_CONCURRENCY} concurrent)...`,
+          active,
+          completed: completedCount,
+          failed: failedCount,
         },
       });
+    };
+
+    updateProgress();
+
+    // Extract repos in parallel with concurrency limit
+    const extractRepo = async (repo: GHRepo) => {
+      const repoConfig = config.repositories[repo.name];
+      const ref = repoConfig.default_branch || "main";
+
+      // Track this repo as active
+      activeRepos.set(repo.name, { startedAt: new Date(), status: "cloning" });
+      updateProgress();
 
       try {
-        const repoPath = await gm.ensureRepo(repo.name, repoConfig.url);
+        // Use shallow clone for faster initial setup (we only need current state)
+        const repoPath = await gm.ensureRepo(repo.name, repoConfig.url, { shallow: true });
+        
+        activeRepos.set(repo.name, { startedAt: activeRepos.get(repo.name)!.startedAt, status: "analyzing" });
+        updateProgress();
+        
         const files = await gm.listFilesAtRef(repoPath, ref);
 
         // Auto-detect and add extractors based on actual file contents
@@ -437,6 +469,12 @@ async function runConnectOrg(job: Job, options: ConnectOrgOptions): Promise<void
           }
         }
 
+        activeRepos.set(repo.name, { 
+          startedAt: activeRepos.get(repo.name)!.startedAt, 
+          status: `extracting (${extractors.length} extractors)` 
+        });
+        updateProgress();
+
         const extractResults = await runExtractors(
           { repoName: repo.name, repoPath, ref, refType: "branch", gitManager: gm },
           extractors
@@ -444,21 +482,37 @@ async function runConnectOrg(job: Job, options: ConnectOrgOptions): Promise<void
 
         await store.save(repo.name, "branch", ref, extractResults);
 
-        extractionResults.push({
+        // Mark as complete
+        activeRepos.delete(repo.name);
+        completedCount++;
+        updateProgress();
+
+        return {
           repo: repo.name,
           ref,
-          status: "extracted",
+          status: "extracted" as const,
           extractors: extractResults.map((r) => r.extractor),
-        });
+        };
       } catch (error) {
-        extractionResults.push({
+        activeRepos.delete(repo.name);
+        completedCount++;
+        failedCount++;
+        updateProgress();
+
+        return {
           repo: repo.name,
           ref,
-          status: "error",
+          status: "error" as const,
           error: String(error),
-        });
+        };
       }
-    }
+    };
+
+    // Run all extractions in parallel with limit
+    const results = await Promise.all(
+      enabledRepos.map((repo) => limit(() => extractRepo(repo)))
+    );
+    extractionResults.push(...results);
 
     const extracted = extractionResults.filter((r) => r.status === "extracted").length;
     const errors = extractionResults.filter((r) => r.status === "error").length;

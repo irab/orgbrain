@@ -89,7 +89,7 @@ export async function registerPrompts(server: McpServer): Promise<void> {
 
 2. The connect_org job runs in the background (cloning repos can take a while).
    - Use job_status to check progress
-   - IMPORTANT: Wait ~10 seconds between status checks to avoid spamming
+   - IMPORTANT: Run "sleep 15" before each status check to avoid spamming (this enforces a 15-second wait)
    - The job has 5 phases: fetching repos, writing config, clearing old data, cloning repos, extracting knowledge
    - Large monorepos may take several minutes to clone and extract
 

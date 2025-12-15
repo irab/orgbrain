@@ -2,15 +2,27 @@
  * Simple in-memory job manager for background tasks
  */
 
+export interface JobProgress {
+  current: number;
+  total: number;
+  message: string;
+  /** Details about currently running sub-tasks (e.g., repos being extracted in parallel) */
+  active?: Array<{
+    name: string;
+    status: string;
+    startedAt?: string;
+  }>;
+  /** Completed sub-tasks count */
+  completed?: number;
+  /** Failed sub-tasks count */
+  failed?: number;
+}
+
 export interface Job {
   id: string;
   type: string;
   status: "pending" | "running" | "completed" | "failed";
-  progress?: {
-    current: number;
-    total: number;
-    message: string;
-  };
+  progress?: JobProgress;
   result?: unknown;
   error?: string;
   startedAt: Date;

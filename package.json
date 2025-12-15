@@ -19,6 +19,7 @@
     "@inquirer/prompts": "^8.0.2",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "glob": "^10.3.10",
+    "p-limit": "^6.1.0",
     "yaml": "^2.6.0",
     "zod": "^3.23.8"
   },

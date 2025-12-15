@@ -1,8 +1,12 @@
+import pLimit from "p-limit";
 import { GitManager } from "./git-manager.js";
 import { loadConfig, isRepoEnabled, type RepoConfig } from "./config-loader.js";
 import { runExtractors, type ExtractionResult } from "./extractor-base.js";
 import { KnowledgeStore } from "./knowledge-store.js";
 import "../extractors/index.js";
+
+// Concurrency limit for parallel repo extraction
+const REPO_CONCURRENCY = 4;
 
 export interface ExtractionOptions {
   repos?: string[];
@@ -36,10 +40,10 @@ export class ExtractionRunner {
 
   async runAll(options: ExtractionOptions = {}): Promise<ExtractionSummary[]> {
     const config = await loadConfig();
-    const summaries: ExtractionSummary[] = [];
-
     const repoNames = options.repos || Object.keys(config.repositories);
 
+    // Filter to enabled repos only
+    const enabledRepos: Array<{ name: string; config: RepoConfig }> = [];
     for (const repoName of repoNames) {
       const repoConfig = config.repositories[repoName];
       if (!repoConfig) {
@@ -52,11 +56,21 @@ export class ExtractionRunner {
         continue;
       }
 
-      const repoSummaries = await this.runRepo(repoName, repoConfig, options);
-      summaries.push(...repoSummaries);
+      enabledRepos.push({ name: repoName, config: repoConfig });
     }
 
-    return summaries;
+    // Run repo extractions in parallel with concurrency limit
+    const limit = pLimit(REPO_CONCURRENCY);
+    console.log(`\n🚀 Extracting ${enabledRepos.length} repos (${REPO_CONCURRENCY} concurrent)...\n`);
+
+    const allSummaries = await Promise.all(
+      enabledRepos.map(({ name, config: repoConfig }) =>
+        limit(() => this.runRepo(name, repoConfig, options))
+      )
+    );
+
+    // Flatten the array of arrays
+    return allSummaries.flat();
   }
 
   async runRepo(

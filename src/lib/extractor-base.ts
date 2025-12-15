@@ -1,4 +1,8 @@
+import pLimit from "p-limit";
 import type { GitManager } from "./git-manager.js";
+
+// Concurrency limit for running extractors in parallel within a single repo
+const EXTRACTOR_CONCURRENCY = 6;
 
 export interface ExtractionContext {
   repoName: string;
@@ -42,36 +46,53 @@ export async function runExtractors(
   ctx: Omit<ExtractionContext, "config">,
   extractorConfigs: Array<{ name: string; config?: Record<string, unknown> }>
 ): Promise<ExtractionResult[]> {
-  const results: ExtractionResult[] = [];
+  const limit = pLimit(EXTRACTOR_CONCURRENCY);
 
-  for (const extractorConfig of extractorConfigs) {
-    const extractor = getExtractor(extractorConfig.name);
-    if (!extractor) {
-      console.warn(`Unknown extractor: ${extractorConfig.name}`);
-      continue;
-    }
-
-    const fullCtx: ExtractionContext = {
-      ...ctx,
-      config: extractorConfig.config || {},
-    };
-
-    try {
-      if (await extractor.canExtract(fullCtx)) {
-        const result = await extractor.extract(fullCtx);
-        results.push(result);
+  // Build list of valid extractors with their contexts
+  const extractorTasks = extractorConfigs
+    .map((extractorConfig) => {
+      const extractor = getExtractor(extractorConfig.name);
+      if (!extractor) {
+        console.warn(`Unknown extractor: ${extractorConfig.name}`);
+        return null;
       }
-    } catch (error) {
-      console.error(`Extractor ${extractorConfig.name} failed:`, error);
-      results.push({
-        extractor: extractorConfig.name,
-        repo: ctx.repoName,
-        ref: ctx.ref,
-        extractedAt: new Date(),
-        data: { error: String(error) },
-      });
-    }
-  }
 
-  return results;
+      const fullCtx: ExtractionContext = {
+        ...ctx,
+        config: extractorConfig.config || {},
+      };
+
+      return { extractor, fullCtx, name: extractorConfig.name };
+    })
+    .filter(Boolean) as Array<{
+      extractor: Extractor;
+      fullCtx: ExtractionContext;
+      name: string;
+    }>;
+
+  // Run extractors in parallel with concurrency limit
+  const results = await Promise.all(
+    extractorTasks.map(({ extractor, fullCtx, name }) =>
+      limit(async (): Promise<ExtractionResult | null> => {
+        try {
+          if (await extractor.canExtract(fullCtx)) {
+            return await extractor.extract(fullCtx);
+          }
+          return null;
+        } catch (error) {
+          console.error(`Extractor ${name} failed:`, error);
+          return {
+            extractor: name,
+            repo: ctx.repoName,
+            ref: ctx.ref,
+            extractedAt: new Date(),
+            data: { error: String(error) },
+          };
+        }
+      })
+    )
+  );
+
+  // Filter out nulls (extractors that couldn't extract or didn't apply)
+  return results.filter(Boolean) as ExtractionResult[];
 }

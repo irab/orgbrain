@@ -396,7 +396,8 @@ export const extractionTools: ToolHandler[] = [
         }
 
         try {
-          const repoPath = await gm.ensureRepo(repoName, repoConfig.url);
+          // Use shallow clone for faster extraction (we only need current state)
+          const repoPath = await gm.ensureRepo(repoName, repoConfig.url, { shallow: true });
           const files = await gm.listFilesAtRef(repoPath, ref);
 
           // Auto-detect and add extractors based on actual file contents

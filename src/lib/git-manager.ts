@@ -53,14 +53,24 @@ export class GitManager {
     await fs.mkdir(this.cacheDir, { recursive: true });
   }
 
-  async ensureRepo(name: string, url: string): Promise<string> {
+  async ensureRepo(name: string, url: string, options: { shallow?: boolean } = {}): Promise<string> {
     const repoPath = join(this.cacheDir, name);
 
     try {
       await fs.access(repoPath);
-      await this.git(["fetch", "--all", "--prune", "--tags"], repoPath);
+      // For shallow repos, just fetch the default branch; for full repos, fetch everything
+      if (options.shallow) {
+        await this.git(["fetch", "--depth", "1", "origin"], repoPath);
+      } else {
+        await this.git(["fetch", "--all", "--prune", "--tags"], repoPath);
+      }
     } catch {
-      await this.git(["clone", "--bare", url, name]);
+      // Clone the repo - use shallow clone for faster initial setup
+      if (options.shallow) {
+        await this.git(["clone", "--bare", "--depth", "1", url, name]);
+      } else {
+        await this.git(["clone", "--bare", url, name]);
+      }
     }
 
     return repoPath;
