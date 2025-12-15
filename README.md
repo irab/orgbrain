@@ -388,7 +388,7 @@ knowledge://static/matrices/nip-usage.json
 ## Tools
 Tools are registered in `src/index.ts` from two bundles:
 - Legacy/utility (`src/tools.ts`): `health_check`, `search_knowledge`, `list_knowledge`, `get_resource`, `get_nip_details`, `find_nip_in_extracted`.
-- Version-aware (`src/tools-v2.ts`): `list_repos`, `list_refs`, `query_nips`, `query_flows`, `query_monorepos`, `query_data_flow`, `query_infra`, `compare_versions`, `diff_versions`, `extract_ref`, `extract_all`, `generate_diagram`, `generate_c4_diagram`.
+- Version-aware (`src/tools/`): `list_repos`, `list_refs`, `query_nips`, `query_flows`, `query_monorepos`, `query_data_flow`, `query_infra`, `compare_versions`, `diff_versions`, `extract_ref`, `extract_all`, `generate_diagram`, `generate_c4_diagram`, `connect_org`, `disconnect_repo`, `toggle_repo`, `job_status`.
 
 ### On-Demand Extraction
 The MCP client can trigger extraction directly without running the CLI:
@@ -430,7 +430,7 @@ Add your own tools by extending either file and wiring them in `src/index.ts`.
 Keep extractors fast; use `gitManager` helpers for file listing/grep at refs, and limit file counts to avoid timeouts.
 
 ## Project structure
-- `src/index.ts`: server entrypoint; registers tools from `src/tools.ts` and `src/tools-v2.ts`.
+- `src/index.ts`: server entrypoint; registers tools from `src/tools.ts` and `src/tools/`.
 - `src/lib/config-loader.ts`: YAML config loader + helpers.
 - `src/lib/git-manager.ts`: git helpers for clone/fetch/list/grep.
 - `src/lib/extractor-base.ts`: extractor interface/registry.

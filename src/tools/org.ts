@@ -571,10 +571,6 @@ export const orgTools: ToolHandler[] = [
           type: "boolean",
           description: "Include archived repositories (default: false)",
         },
-        include_nips: {
-          type: "boolean",
-          description: "Include NIP extractor for Nostr repos (default: false)",
-        },
         filter: {
           type: "string",
           description: "Regex pattern to filter repo names (only include matching)",
@@ -599,7 +595,7 @@ export const orgTools: ToolHandler[] = [
 
       const includeForks = Boolean(args.include_forks) || false;
       const includeArchived = Boolean(args.include_archived) || false;
-      const includeNips = Boolean(args.include_nips) || false;
+      const includeNips = false;
       const filterPattern = args.filter as string | undefined;
       const excludePattern = args.exclude as string | undefined;
 
