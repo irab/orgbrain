@@ -25,7 +25,10 @@ const journeyImpactExtractor: Extractor = {
       f.toLowerCase().includes("journey") ||
       f.toLowerCase().includes("flows/") ||
       f.toLowerCase().includes("docs/") ||
-      f.includes("/screens/") || f.includes("/pages/")
+      f.includes("/screens/") || f.includes("/pages/") ||
+      // Rust projects with docs
+      (f.startsWith("docs/") && f.endsWith(".md")) ||
+      f === "README.md"
     );
   },
 
@@ -33,19 +36,30 @@ const journeyImpactExtractor: Extractor = {
     const files = await ctx.gitManager.listFilesAtRef(ctx.repoPath, ctx.ref);
 
     const journeyDocs = files.filter((f) =>
-      f.match(/\.(md|mdx)$/) && (f.toLowerCase().includes("journey") || f.toLowerCase().includes("flow"))
+      f.match(/\.(md|mdx)$/) && (
+        f.toLowerCase().includes("journey") || 
+        f.toLowerCase().includes("flow") ||
+        f.toLowerCase().includes("design") ||
+        f.toLowerCase().includes("plan")
+      )
     ).slice(0, 50);
 
     const screenFiles = files.filter((f) =>
       f.includes("/screens/") || f.includes("/pages/") || f.includes("/views/")
     ).slice(0, 100);
 
-    const serviceFiles = files.filter((f) =>
+    // JS/TS services
+    const jsServiceFiles = files.filter((f) =>
       f.includes("/services/") || f.endsWith("Service.ts") || f.endsWith("Service.js")
     ).slice(0, 100);
 
+    // Rust modules (src/*.rs)
+    const rustServiceFiles = files.filter((f) =>
+      f.startsWith("src/") && f.endsWith(".rs") && f !== "src/lib.rs" && f !== "src/main.rs"
+    ).slice(0, 100);
+
     const screens = screenFiles.map(extractName);
-    const services = serviceFiles.map(extractName);
+    const services = [...jsServiceFiles.map(extractName), ...rustServiceFiles.map(extractRustName)];
 
     const journeys: JourneyDoc[] = [];
 
@@ -90,6 +104,15 @@ function extractName(path: string): string {
   return filename
     .replace(/\.(md|mdx|ts|js|tsx|vue|dart)$/i, "")
     .replace(/[_-]/g, " ")
+    .trim();
+}
+
+function extractRustName(path: string): string {
+  const parts = path.split("/");
+  const filename = parts[parts.length - 1];
+  return filename
+    .replace(/\.rs$/i, "")
+    .replace(/_/g, " ")
     .trim();
 }
 

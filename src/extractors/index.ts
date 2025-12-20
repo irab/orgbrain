@@ -5,6 +5,7 @@ import "./app/data-flow.js";
 import "./app/monorepo.js";
 import "./infra/terraform.js";
 import "./infra/kubernetes.js";
+import "./infra/cloudflare-workers.js";
 import "./architecture/journey-impact.js";
 import "./types/index.js";
 

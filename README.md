@@ -225,6 +225,23 @@ Extracts structs, classes, interfaces, enums, and type aliases across multiple l
     file_types: ["ts", "js", "rs", "dart", "md"]  # File extensions to scan
 ```
 
+#### `cloudflare_workers` - Cloudflare Workers Projects
+Extracts configuration, API endpoints, and infrastructure from Cloudflare Workers projects (Rust/WASM or JavaScript).
+
+```yaml
+- name: cloudflare_workers
+  # No config options - auto-detects wrangler.toml
+```
+
+**Output includes:**
+- Worker name and routes (custom domains)
+- KV namespace bindings
+- Durable Object bindings and class names
+- Queue producers and consumers
+- API endpoints (extracted from Rust router patterns)
+- Rust dependencies from Cargo.toml
+- Compatibility date and build commands
+
 ### Example Configurations
 
 #### Backend API with Type Extraction
@@ -309,6 +326,19 @@ data-service:
       config:
         prioritize: ["proto/", "internal/models/"]
     - name: data_flow
+```
+
+#### Cloudflare Worker (Rust/WASM)
+```yaml
+api-gateway:
+  url: git@github.com:org/api-gateway.git
+  type: backend
+  language: rust
+  default_branch: main
+  extractors:
+    - name: cloudflare_workers
+    - name: data_flow
+    - name: journey_impact
 ```
 
 ## CLI Commands
@@ -404,6 +434,8 @@ Tools are registered in `src/index.ts` from multiple modules:
 ### Diagram Tools
 - `generate_diagram` - Generate Mermaid flowchart for repo or ecosystem
 - `generate_c4_diagram` - Generate C4-style architecture diagrams (context, container, component, dynamic, deployment)
+  - `detailed: true` - Show ALL elements without truncation (default: false)
+  - `export: true` - Include export instructions for saving diagram to file
 
 ### Extraction Tools
 - `extract_ref` - Extract a specific ref for a repo
@@ -418,6 +450,41 @@ Tools are registered in `src/index.ts` from multiple modules:
 - `disconnect_repo` - Remove a repo from config
 - `toggle_repo` - Enable/disable a repo
 - `job_status` - Check extraction job status
+
+### Diagram Generation Example
+
+```
+# Generate a container diagram for a repo
+generate_c4_diagram(repo: "my-app", type: "container")
+
+# Generate a FULL diagram with ALL elements (no truncation)
+generate_c4_diagram(repo: "my-app", type: "deployment", detailed: true)
+
+# Generate diagram with export instructions
+generate_c4_diagram(repo: "my-app", type: "deployment", detailed: true, export: true)
+# Returns: { mermaid: "...", exportTo: { suggestedPath: "docs/diagrams/my-app-deployment.md", instruction: "..." } }
+
+# Ecosystem-wide deployment diagram
+generate_c4_diagram(type: "deployment", detailed: true, export: true)
+
+# Available diagram types:
+# - context: System context (users, external systems)
+# - container: Apps, services, databases
+# - component: Internal structure (screens, modules)
+# - dynamic: Request/interaction flows with numbered steps
+# - deployment: Infrastructure (K8s, Cloudflare Workers, Terraform)
+```
+
+**Truncation limits (when `detailed: false`):**
+| Element | Limit |
+|---------|-------|
+| Endpoints | 8 |
+| Services | 5 |
+| Screens | 8 |
+| K8s Deployments | 5 |
+| Apps per repo (ecosystem) | 4 |
+
+Use `detailed: true` to show ALL elements without limits.
 
 ### Cross-Repo Type Analysis Example
 
@@ -526,7 +593,8 @@ src/
 │   │   └── monorepo.ts
 │   ├── infra/                  # Infrastructure extractors
 │   │   ├── kubernetes.ts
-│   │   └── terraform.ts
+│   │   ├── terraform.ts
+│   │   └── cloudflare-workers.ts
 │   ├── architecture/           # Architecture extractors
 │   │   └── journey-impact.ts
 │   └── types/                  # Type definition extractor

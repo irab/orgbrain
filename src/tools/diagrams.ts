@@ -79,9 +79,61 @@ interface TerraformData {
   providers?: string[];
 }
 
+interface CloudflareWorkersData {
+  name?: string;
+  routes?: Array<{ pattern: string; customDomain: boolean }>;
+  kvNamespaces?: Array<{ binding: string; id?: string }>;
+  durableObjects?: Array<{ name: string; className: string }>;
+  queues?: Array<{ name: string; binding?: string; type: "producer" | "consumer" }>;
+  endpoints?: Array<{ method: string; path: string; file: string; description?: string }>;
+  dependencies?: Array<{ name: string; version: string; features?: string[] }>;
+  compatibilityDate?: string;
+  variables?: Record<string, string>;
+}
+
 type C4DiagramType = "context" | "container" | "component" | "dynamic" | "deployment";
 
 const VALID_C4_TYPES: C4DiagramType[] = ["context", "container", "component", "dynamic", "deployment"];
+
+// Configurable limits for diagram elements
+interface DiagramLimits {
+  endpoints: number;
+  endpointsPerFile: number;
+  services: number;
+  screens: number;
+  externalDomains: number;
+  k8sDeployments: number;
+  k8sServices: number;
+  ingresses: number;
+  appsPerRepo: number;
+  dependencies: number;
+}
+
+const DEFAULT_LIMITS: DiagramLimits = {
+  endpoints: 8,
+  endpointsPerFile: 5,
+  services: 5,
+  screens: 8,
+  externalDomains: 5,
+  k8sDeployments: 5,
+  k8sServices: 3,
+  ingresses: 3,
+  appsPerRepo: 4,
+  dependencies: 2,
+};
+
+const NO_LIMITS: DiagramLimits = {
+  endpoints: Infinity,
+  endpointsPerFile: Infinity,
+  services: Infinity,
+  screens: Infinity,
+  externalDomains: Infinity,
+  k8sDeployments: Infinity,
+  k8sServices: Infinity,
+  ingresses: Infinity,
+  appsPerRepo: Infinity,
+  dependencies: Infinity,
+};
 
 /**
  * Validate repository name format
@@ -116,7 +168,7 @@ function groupScreensByApp(screens: Screen[]): Map<string, string[]> {
 /**
  * Extract unique external domains from calls
  */
-function getExternalDomains(calls: ExternalCall[]): string[] {
+function getExternalDomains(calls: ExternalCall[], limit: number = 5): string[] {
   const domains = new Set<string>();
   for (const call of calls) {
     try {
@@ -126,7 +178,15 @@ function getExternalDomains(calls: ExternalCall[]): string[] {
       // Skip invalid URLs
     }
   }
-  return [...domains].slice(0, 5);
+  const all = [...domains];
+  return limit === Infinity ? all : all.slice(0, limit);
+}
+
+/**
+ * Helper to slice with infinity support
+ */
+function limitSlice<T>(arr: T[], limit: number): T[] {
+  return limit === Infinity ? arr : arr.slice(0, limit);
 }
 
 /**
@@ -156,7 +216,9 @@ function generateContextDiagram(
   repoName: string,
   repoLabel: string,
   _monorepo: MonorepoData | null,
-  dataFlow: DataFlowData | null
+  dataFlow: DataFlowData | null,
+  cfWorkers: CloudflareWorkersData | null = null,
+  limits: DiagramLimits = DEFAULT_LIMITS
 ): string[] {
   const label = sanitizeLabel(repoLabel);
   const lines: string[] = ["flowchart TB"];
@@ -166,14 +228,53 @@ function generateContextDiagram(
   lines.push('    Admin(["👤 Admin"])');
   lines.push("");
 
-  // Main system
-  lines.push(`    subgraph ${sanitize(repoName)}["🏢 ${label}"]`);
-  lines.push(`        ${sanitize(repoName)}_core["The Software System"]`);
-  lines.push("    end");
+  // Main system - detect if this is a Cloudflare Worker
+  if (cfWorkers?.name) {
+    const routes = cfWorkers.routes?.map(r => sanitizeLabel(r.pattern)).join(", ") || "";
+    lines.push(`    subgraph ${sanitize(repoName)}["⚡ ${label}"]`);
+    lines.push(`        ${sanitize(repoName)}_core["Cloudflare Worker<br/>${routes}"]`);
+    lines.push("    end");
+  } else {
+    lines.push(`    subgraph ${sanitize(repoName)}["🏢 ${label}"]`);
+    lines.push(`        ${sanitize(repoName)}_core["The Software System"]`);
+    lines.push("    end");
+  }
   lines.push("");
 
+  // Cloudflare services used by the worker
+  if (cfWorkers) {
+    const hasKV = (cfWorkers.kvNamespaces?.length || 0) > 0;
+    const hasDO = (cfWorkers.durableObjects?.length || 0) > 0;
+    const hasQueues = (cfWorkers.queues?.length || 0) > 0;
+
+    if (hasKV || hasDO || hasQueues) {
+      lines.push('    subgraph CF["☁️ Cloudflare Services"]');
+      if (hasKV) {
+        for (const kv of cfWorkers.kvNamespaces!) {
+          const kvLabel = sanitizeLabel(kv.binding);
+          lines.push(`        ${sanitize("kv_" + kv.binding)}[("💾 KV: ${kvLabel}")]`);
+        }
+      }
+      if (hasDO) {
+        for (const dobj of cfWorkers.durableObjects!) {
+          const doLabel = sanitizeLabel(dobj.className);
+          lines.push(`        ${sanitize("do_" + dobj.name)}[["🔗 DO: ${doLabel}"]]`);
+        }
+      }
+      if (hasQueues) {
+        const uniqueQueues = [...new Set(cfWorkers.queues!.map(q => q.name))];
+        for (const queueName of uniqueQueues) {
+          const qLabel = sanitizeLabel(queueName);
+          lines.push(`        ${sanitize("queue_" + queueName)}>"📬 Queue: ${qLabel}"]`);
+        }
+      }
+      lines.push("    end");
+      lines.push("");
+    }
+  }
+
   // External systems
-  const externals = getExternalDomains(dataFlow?.externalCalls || []);
+  const externals = getExternalDomains(dataFlow?.externalCalls || [], limits.externalDomains);
   if (externals.length > 0) {
     lines.push('    subgraph External["🌐 External Systems"]');
     for (const ext of externals) {
@@ -187,6 +288,21 @@ function generateContextDiagram(
   // Relationships
   lines.push(`    User -->|Uses| ${sanitize(repoName)}`);
   lines.push(`    Admin -->|Administers| ${sanitize(repoName)}`);
+
+  // Worker to Cloudflare services
+  if (cfWorkers) {
+    for (const kv of cfWorkers.kvNamespaces || []) {
+      lines.push(`    ${sanitize(repoName)} -->|Reads/Writes| ${sanitize("kv_" + kv.binding)}`);
+    }
+    for (const dobj of cfWorkers.durableObjects || []) {
+      lines.push(`    ${sanitize(repoName)} -->|Coordinates| ${sanitize("do_" + dobj.name)}`);
+    }
+    const uniqueQueues = [...new Set((cfWorkers.queues || []).map(q => q.name))];
+    for (const queueName of uniqueQueues) {
+      lines.push(`    ${sanitize(repoName)} -->|Pub/Sub| ${sanitize("queue_" + queueName)}`);
+    }
+  }
+
   for (const ext of externals) {
     lines.push(`    ${sanitize(repoName)} -->|Calls| ${sanitize("ext_" + ext)}`);
   }
@@ -204,7 +320,9 @@ function generateContainerDiagram(
   tech: string,
   monorepo: MonorepoData | null,
   userFlows: UserFlowsData | null,
-  dataFlow: DataFlowData | null
+  dataFlow: DataFlowData | null,
+  cfWorkers: CloudflareWorkersData | null = null,
+  limits: DiagramLimits = DEFAULT_LIMITS
 ): string[] {
   const label = sanitizeLabel(repoLabel);
   const lines: string[] = ["flowchart TB"];
@@ -213,7 +331,91 @@ function generateContainerDiagram(
   lines.push('    User(["👤 User"])');
   lines.push("");
 
-  // System boundary
+  // Cloudflare Worker container diagram
+  if (cfWorkers?.name) {
+    const workerLabel = sanitizeLabel(cfWorkers.name);
+    const routes = cfWorkers.routes?.map(r => r.pattern).join(", ") || "";
+    const routeLabel = sanitizeLabel(routes);
+
+    lines.push(`    subgraph ${sanitize(repoName)}_boundary["⚡ ${workerLabel}"]`);
+
+    // API Endpoints
+    if (cfWorkers.endpoints && cfWorkers.endpoints.length > 0) {
+      lines.push('        subgraph Endpoints["🔌 API Endpoints"]');
+      const shownEndpoints = limitSlice(cfWorkers.endpoints, limits.endpoints);
+      for (const ep of shownEndpoints) {
+        const epId = sanitize(`ep_${ep.method}_${ep.path}`);
+        const desc = ep.description ? `<br/>${sanitizeLabel(ep.description.slice(0, 30))}` : "";
+        lines.push(`            ${epId}["${ep.method} ${sanitizeLabel(ep.path)}${desc}"]`);
+      }
+      if (cfWorkers.endpoints.length > shownEndpoints.length) {
+        lines.push(`            ep_more["+${cfWorkers.endpoints.length - shownEndpoints.length} more endpoints"]`);
+      }
+      lines.push("        end");
+    }
+
+    // Durable Objects
+    if (cfWorkers.durableObjects && cfWorkers.durableObjects.length > 0) {
+      lines.push('        subgraph DurableObjects["🔗 Durable Objects"]');
+      for (const dobj of cfWorkers.durableObjects) {
+        const doId = sanitize(`do_${dobj.name}`);
+        const doLabel = sanitizeLabel(dobj.className);
+        lines.push(`            ${doId}[["${doLabel}"]]`);
+      }
+      lines.push("        end");
+    }
+
+    lines.push("    end");
+    lines.push("");
+
+    // Cloudflare data services
+    const hasKV = (cfWorkers.kvNamespaces?.length || 0) > 0;
+    const hasQueues = (cfWorkers.queues?.length || 0) > 0;
+
+    if (hasKV || hasQueues) {
+      lines.push('    subgraph CF["☁️ Cloudflare Services"]');
+      if (hasKV) {
+        for (const kv of cfWorkers.kvNamespaces!) {
+          const kvLabel = sanitizeLabel(kv.binding);
+          lines.push(`        ${sanitize("kv_" + kv.binding)}[("💾 KV: ${kvLabel}")]`);
+        }
+      }
+      if (hasQueues) {
+        const uniqueQueues = [...new Set(cfWorkers.queues!.map(q => q.name))];
+        for (const queueName of uniqueQueues) {
+          const qLabel = sanitizeLabel(queueName);
+          lines.push(`        ${sanitize("queue_" + queueName)}>"📬 ${qLabel}"]`);
+        }
+      }
+      lines.push("    end");
+      lines.push("");
+    }
+
+    // Relationships
+    if (routeLabel) {
+      lines.push(`    User -->|"${routeLabel}"| ${sanitize(repoName)}_boundary`);
+    } else {
+      lines.push(`    User -->|HTTPS| ${sanitize(repoName)}_boundary`);
+    }
+
+    // Worker internal connections
+    if (cfWorkers.durableObjects && cfWorkers.durableObjects.length > 0) {
+      lines.push(`    Endpoints -->|coordinates| DurableObjects`);
+    }
+
+    // Worker to data services
+    for (const kv of cfWorkers.kvNamespaces || []) {
+      lines.push(`    ${sanitize(repoName)}_boundary -->|cache| ${sanitize("kv_" + kv.binding)}`);
+    }
+    const uniqueQueues = [...new Set((cfWorkers.queues || []).map(q => q.name))];
+    for (const queueName of uniqueQueues) {
+      lines.push(`    ${sanitize(repoName)}_boundary -->|pub/sub| ${sanitize("queue_" + queueName)}`);
+    }
+
+    return lines;
+  }
+
+  // Standard system boundary (non-worker)
   lines.push(`    subgraph ${sanitize(repoName)}_boundary["🏢 ${label}"]`);
 
   if (monorepo?.detected) {
@@ -245,17 +447,22 @@ function generateContainerDiagram(
     const screensByApp = groupScreensByApp(userFlows?.screens || []);
     for (const [app, screens] of screensByApp) {
       const appLabel = sanitizeLabel(app);
-      const screenList = screens.slice(0, 3).map((s) => sanitizeLabel(s)).join(", ");
-      const desc = screenList + (screens.length > 3 ? "..." : "");
+      const shownScreens = limitSlice(screens, 3);
+      const screenList = shownScreens.map((s) => sanitizeLabel(s)).join(", ");
+      const desc = screenList + (screens.length > shownScreens.length ? "..." : "");
       lines.push(`        ${sanitize("ui_" + app)}["🖥️ ${appLabel}<br/>${sanitizeLabel(tech)}<br/>${desc}"]`);
     }
 
     const services = dataFlow?.services || [];
     if (services.length > 0) {
       lines.push('        subgraph Services["⚙️ Services"]');
-      for (const svc of services.slice(0, 5)) {
+      const shownServices = limitSlice(services, limits.services);
+      for (const svc of shownServices) {
         const svcLabel = sanitizeLabel(svc.name);
         lines.push(`            ${sanitize("svc_" + svc.name)}["${svcLabel}"]`);
+      }
+      if (services.length > shownServices.length) {
+        lines.push(`            svc_more["+${services.length - shownServices.length} more services"]`);
       }
       lines.push("        end");
     }
@@ -265,7 +472,7 @@ function generateContainerDiagram(
   lines.push("");
 
   // External systems
-  const externals = getExternalDomains(dataFlow?.externalCalls || []);
+  const externals = getExternalDomains(dataFlow?.externalCalls || [], limits.externalDomains);
   if (externals.length > 0) {
     lines.push('    subgraph External["🌐 External APIs"]');
     for (const ext of externals) {
@@ -313,10 +520,78 @@ function generateComponentDiagram(
   tech: string,
   monorepo: MonorepoData | null,
   userFlows: UserFlowsData | null,
-  dataFlow: DataFlowData | null
+  dataFlow: DataFlowData | null,
+  cfWorkers: CloudflareWorkersData | null = null,
+  limits: DiagramLimits = DEFAULT_LIMITS
 ): string[] {
   const label = sanitizeLabel(repoLabel);
   const lines: string[] = ["flowchart TB"];
+
+  // Cloudflare Worker component diagram - show detailed internal structure
+  if (cfWorkers?.name) {
+    const workerLabel = sanitizeLabel(cfWorkers.name);
+    lines.push(`    subgraph ${sanitize(repoName)}_boundary["⚡ ${workerLabel} - Internal Components"]`);
+
+    // Group endpoints by file/handler
+    const endpointsByFile = new Map<string, typeof cfWorkers.endpoints>();
+    for (const ep of cfWorkers.endpoints || []) {
+      const file = ep.file || "main";
+      if (!endpointsByFile.has(file)) endpointsByFile.set(file, []);
+      endpointsByFile.get(file)!.push(ep);
+    }
+
+    // Router/entry point
+    lines.push('        subgraph Router["🔀 Router"]');
+    for (const [file, eps] of endpointsByFile) {
+      const fileLabel = sanitizeLabel(file.replace(/.*\//, "").replace(".rs", ""));
+      lines.push(`            subgraph ${sanitize("file_" + file)}["📄 ${fileLabel}"]`);
+      const shownEps = limitSlice(eps || [], limits.endpointsPerFile);
+      for (const ep of shownEps) {
+        const epId = sanitize(`ep_${ep.method}_${ep.path}`);
+        lines.push(`                ${epId}["${ep.method} ${sanitizeLabel(ep.path)}"]`);
+      }
+      if ((eps || []).length > shownEps.length) {
+        lines.push(`                ${sanitize("file_" + file)}_more["+${(eps || []).length - shownEps.length} more"]`);
+      }
+      lines.push("            end");
+    }
+    lines.push("        end");
+
+    // Durable Objects as internal components
+    if (cfWorkers.durableObjects && cfWorkers.durableObjects.length > 0) {
+      lines.push('        subgraph DO["🔗 Durable Objects"]');
+      for (const dobj of cfWorkers.durableObjects) {
+        const doId = sanitize(`do_${dobj.name}`);
+        const doLabel = sanitizeLabel(dobj.className);
+        lines.push(`            ${doId}[["${doLabel}<br/>Stateful Actor"]]`);
+      }
+      lines.push("        end");
+    }
+
+    // Key dependencies as internal modules
+    const keyDeps = (cfWorkers.dependencies || []).filter(
+      d => ["worker", "serde", "k256", "sha2"].includes(d.name)
+    );
+    if (keyDeps.length > 0) {
+      lines.push('        subgraph Deps["📦 Key Dependencies"]');
+      for (const dep of keyDeps) {
+        const depId = sanitize(`dep_${dep.name}`);
+        const features = dep.features ? ` [${dep.features.join(", ")}]` : "";
+        lines.push(`            ${depId}["${dep.name} ${dep.version}${features}"]`);
+      }
+      lines.push("        end");
+    }
+
+    lines.push("    end");
+    lines.push("");
+
+    // Internal relationships
+    if (cfWorkers.durableObjects && cfWorkers.durableObjects.length > 0) {
+      lines.push("    Router -->|coordinates| DO");
+    }
+
+    return lines;
+  }
 
   if (monorepo?.detected) {
     const apps = monorepo.apps || [];
@@ -329,12 +604,13 @@ function generateComponentDiagram(
       lines.push(`    subgraph ${sanitize(pkg.name)}_boundary["📦 ${pkgLabel}"]`);
 
       if (appScreens.length > 0) {
-        for (const screen of appScreens.slice(0, 6)) {
+        const shownScreens = limitSlice(appScreens, limits.screens);
+        for (const screen of shownScreens) {
           const screenLabel = sanitizeLabel(screen);
           lines.push(`        ${sanitize(pkg.name + "_" + screen)}["📄 ${screenLabel}"]`);
         }
-        if (appScreens.length > 6) {
-          lines.push(`        ${sanitize(pkg.name)}_more["+${appScreens.length - 6} more pages"]`);
+        if (appScreens.length > shownScreens.length) {
+          lines.push(`        ${sanitize(pkg.name)}_more["+${appScreens.length - shownScreens.length} more pages"]`);
         }
       } else {
         const techLabel = sanitizeLabel(pkg.framework || tech);
@@ -351,9 +627,13 @@ function generateComponentDiagram(
 
     if (services.length > 0) {
       lines.push('        subgraph Services["⚙️ Services"]');
-      for (const svc of services) {
+      const shownServices = limitSlice(services, limits.services);
+      for (const svc of shownServices) {
         const svcLabel = sanitizeLabel(svc.name);
         lines.push(`            ${sanitize("svc_" + svc.name)}["${svcLabel}"]`);
+      }
+      if (services.length > shownServices.length) {
+        lines.push(`            svc_more["+${services.length - shownServices.length} more"]`);
       }
       lines.push("        end");
     }
@@ -361,12 +641,13 @@ function generateComponentDiagram(
     const screens = userFlows?.screens || [];
     if (screens.length > 0) {
       lines.push('        subgraph Screens["📄 Screens"]');
-      for (const screen of screens.slice(0, 8)) {
+      const shownScreens = limitSlice(screens, limits.screens);
+      for (const screen of shownScreens) {
         const screenLabel = sanitizeLabel(screen.name);
         lines.push(`            ${sanitize("screen_" + screen.name)}["${screenLabel}"]`);
       }
-      if (screens.length > 8) {
-        lines.push(`            screens_more["+${screens.length - 8} more"]`);
+      if (screens.length > shownScreens.length) {
+        lines.push(`            screens_more["+${screens.length - shownScreens.length} more"]`);
       }
       lines.push("        end");
     }
@@ -379,7 +660,8 @@ function generateComponentDiagram(
     lines.push("");
     for (const svc of dataFlow.services) {
       if (svc.dependencies) {
-        for (const dep of svc.dependencies.slice(0, 2)) {
+        const shownDeps = limitSlice(svc.dependencies, limits.dependencies);
+        for (const dep of shownDeps) {
           const depSvc = dataFlow.services.find((s) => s.name === dep);
           if (depSvc) {
             lines.push(`    ${sanitize("svc_" + svc.name)} --> ${sanitize("svc_" + dep)}`);
@@ -401,13 +683,100 @@ function generateDynamicDiagram(
   repoLabel: string,
   monorepo: MonorepoData | null,
   _userFlows: UserFlowsData | null,
-  dataFlow: DataFlowData | null
+  dataFlow: DataFlowData | null,
+  cfWorkers: CloudflareWorkersData | null = null,
+  limits: DiagramLimits = DEFAULT_LIMITS
 ): string[] {
   const label = sanitizeLabel(repoLabel);
   const lines: string[] = ["flowchart LR"];
 
   lines.push('    User(["👤 User"])');
   lines.push("");
+
+  // Cloudflare Worker request flow
+  if (cfWorkers?.name) {
+    const workerLabel = sanitizeLabel(cfWorkers.name);
+    const route = cfWorkers.routes?.[0]?.pattern || "worker";
+
+    // Show the worker
+    lines.push(`    Worker["⚡ ${workerLabel}"]`);
+
+    // Show key endpoints
+    const allKeyEndpoints = (cfWorkers.endpoints || []).filter(
+      ep => !ep.path.includes("health") && ep.path !== "/"
+    );
+    const keyEndpoints = limitSlice(allKeyEndpoints, limits.endpoints);
+
+    if (keyEndpoints.length > 0) {
+      lines.push('    subgraph Handlers["🔀 Request Handlers"]');
+      for (const ep of keyEndpoints) {
+        const epId = sanitize(`handler_${ep.method}_${ep.path}`);
+        lines.push(`        ${epId}["${ep.method} ${sanitizeLabel(ep.path)}"]`);
+      }
+      if (allKeyEndpoints.length > keyEndpoints.length) {
+        lines.push(`        handlers_more["+${allKeyEndpoints.length - keyEndpoints.length} more"]`);
+      }
+      lines.push("    end");
+    }
+    lines.push("");
+
+    // Durable Objects
+    if (cfWorkers.durableObjects && cfWorkers.durableObjects.length > 0) {
+      lines.push('    subgraph DOs["🔗 Durable Objects"]');
+      for (const dobj of cfWorkers.durableObjects) {
+        const doId = sanitize(`do_${dobj.name}`);
+        lines.push(`        ${doId}[["${sanitizeLabel(dobj.className)}"]]`);
+      }
+      lines.push("    end");
+    }
+
+    // Data stores
+    const hasKV = (cfWorkers.kvNamespaces?.length || 0) > 0;
+    const hasQueues = (cfWorkers.queues?.length || 0) > 0;
+
+    if (hasKV || hasQueues) {
+      lines.push('    subgraph Data["💾 Data Layer"]');
+      for (const kv of cfWorkers.kvNamespaces || []) {
+        lines.push(`        ${sanitize("kv_" + kv.binding)}[("KV: ${sanitizeLabel(kv.binding)}")]`);
+      }
+      const uniqueQueues = [...new Set((cfWorkers.queues || []).map(q => q.name))];
+      for (const queueName of uniqueQueues) {
+        lines.push(`        ${sanitize("queue_" + queueName)}>"Queue: ${sanitizeLabel(queueName)}"]`);
+      }
+      lines.push("    end");
+    }
+    lines.push("");
+
+    // Flow with numbered steps
+    let step = 1;
+    lines.push(`    User -->|"${step}. HTTPS ${route}"| Worker`);
+    step++;
+
+    if (keyEndpoints.length > 0) {
+      lines.push(`    Worker -->|"${step}. Route"| Handlers`);
+      step++;
+    }
+
+    if (cfWorkers.durableObjects && cfWorkers.durableObjects.length > 0) {
+      lines.push(`    Handlers -->|"${step}. Coordinate"| DOs`);
+      step++;
+    }
+
+    if (hasKV) {
+      lines.push(`    ${keyEndpoints.length > 0 ? "Handlers" : "Worker"} -->|"${step}. Cache lookup"| ${sanitize("kv_" + cfWorkers.kvNamespaces![0].binding)}`);
+      step++;
+    }
+
+    if (hasQueues) {
+      const firstQueue = (cfWorkers.queues || [])[0];
+      if (firstQueue) {
+        lines.push(`    ${keyEndpoints.length > 0 ? "Handlers" : "Worker"} -->|"${step}. Async"| ${sanitize("queue_" + firstQueue.name)}`);
+        step++;
+      }
+    }
+
+    return lines;
+  }
 
   if (monorepo?.detected) {
     const apps = monorepo.apps || [];
@@ -432,17 +801,17 @@ function generateDynamicDiagram(
     }
 
     // External calls
-    const externals = getExternalDomains(dataFlow?.externalCalls || []);
+    const externals = getExternalDomains(dataFlow?.externalCalls || [], limits.externalDomains);
     if (externals.length > 0) {
       lines.push("");
       lines.push('    subgraph External["🌐 External"]');
-      for (const ext of externals.slice(0, 2)) {
+      for (const ext of externals) {
         const extLabel = sanitizeLabel(ext);
         lines.push(`        ${sanitize("ext_" + ext)}[("${extLabel}")]`);
       }
       lines.push("    end");
       lines.push("");
-      for (const ext of externals.slice(0, 2)) {
+      for (const ext of externals) {
         if (apiApp) {
           lines.push(`    ${sanitize(apiApp.name)} -->|"${step}. Calls API"| ${sanitize("ext_" + ext)}`);
           step++;
@@ -454,17 +823,17 @@ function generateDynamicDiagram(
     lines.push(`    ${sanitize(repoName)}["🖥️ ${label}"]`);
     lines.push(`    User -->|"1. Uses"| ${sanitize(repoName)}`);
 
-    const externals = getExternalDomains(dataFlow?.externalCalls || []);
+    const externals = getExternalDomains(dataFlow?.externalCalls || [], limits.externalDomains);
     if (externals.length > 0) {
       lines.push("");
       lines.push('    subgraph External["🌐 External"]');
-      for (const ext of externals.slice(0, 3)) {
+      for (const ext of externals) {
         const extLabel = sanitizeLabel(ext);
         lines.push(`        ${sanitize("ext_" + ext)}[("${extLabel}")]`);
       }
       lines.push("    end");
       lines.push("");
-      for (const [idx, ext] of externals.slice(0, 3).entries()) {
+      for (const [idx, ext] of externals.entries()) {
         lines.push(`    ${sanitize(repoName)} -->|"${idx + 2}. Calls"| ${sanitize("ext_" + ext)}`);
       }
     }
@@ -482,13 +851,89 @@ function generateDeploymentDiagram(
   repoLabel: string,
   monorepo: MonorepoData | null,
   k8s: K8sData | null,
-  terraform: TerraformData | null
+  terraform: TerraformData | null,
+  cfWorkers: CloudflareWorkersData | null = null,
+  limits: DiagramLimits = DEFAULT_LIMITS
 ): string[] {
   const label = sanitizeLabel(repoLabel);
   const lines: string[] = ["flowchart TB"];
 
   const hasK8s = k8s && ((k8s.deployments?.length || 0) > 0 || (k8s.services?.length || 0) > 0);
   const hasTf = terraform && ((terraform.resources || 0) > 0);
+  const hasCfWorker = cfWorkers?.name;
+
+  // Cloudflare Worker deployment
+  if (hasCfWorker) {
+    const workerLabel = sanitizeLabel(cfWorkers!.name!);
+    const route = cfWorkers!.routes?.[0]?.pattern || "worker.example.com";
+    const compatDate = cfWorkers!.compatibilityDate || "latest";
+
+    lines.push('    Internet(["🌐 Internet"])');
+    lines.push("");
+
+    lines.push('    subgraph Cloudflare["☁️ Cloudflare Edge Network"]');
+
+    // DNS/Route
+    lines.push('        subgraph Edge["🌍 Edge (300+ PoPs)"]');
+    lines.push(`            DNS["📍 ${sanitizeLabel(route)}"]`);
+    lines.push("        end");
+    lines.push("");
+
+    // Worker runtime
+    lines.push('        subgraph Runtime["⚡ Workers Runtime"]');
+    lines.push(`            Worker["🔧 ${workerLabel}<br/>Rust/WASM<br/>compat: ${compatDate}"]`);
+
+    if (cfWorkers!.durableObjects && cfWorkers!.durableObjects.length > 0) {
+      for (const dobj of cfWorkers!.durableObjects) {
+        const doLabel = sanitizeLabel(dobj.className);
+        lines.push(`            ${sanitize("do_" + dobj.name)}[["🔗 DO: ${doLabel}"]]`);
+      }
+    }
+    lines.push("        end");
+    lines.push("");
+
+    // Data services
+    const hasKV = (cfWorkers!.kvNamespaces?.length || 0) > 0;
+    const hasQueues = (cfWorkers!.queues?.length || 0) > 0;
+
+    if (hasKV || hasQueues) {
+      lines.push('        subgraph DataServices["💾 Data Services"]');
+      for (const kv of cfWorkers!.kvNamespaces || []) {
+        const kvLabel = sanitizeLabel(kv.binding);
+        lines.push(`            ${sanitize("kv_" + kv.binding)}[("KV: ${kvLabel}<br/>Global replicated")]`);
+      }
+      const uniqueQueues = [...new Set((cfWorkers!.queues || []).map(q => q.name))];
+      for (const queueName of uniqueQueues) {
+        const qLabel = sanitizeLabel(queueName);
+        lines.push(`            ${sanitize("queue_" + queueName)}>"Queue: ${qLabel}"]`);
+      }
+      lines.push("        end");
+    }
+
+    lines.push("    end");
+    lines.push("");
+
+    // Relationships
+    lines.push("    Internet -->|HTTPS| DNS");
+    lines.push("    DNS -->|Route| Worker");
+
+    if (cfWorkers!.durableObjects && cfWorkers!.durableObjects.length > 0) {
+      for (const dobj of cfWorkers!.durableObjects) {
+        lines.push(`    Worker -->|stub| ${sanitize("do_" + dobj.name)}`);
+      }
+    }
+
+    for (const kv of cfWorkers!.kvNamespaces || []) {
+      lines.push(`    Worker -->|get/put| ${sanitize("kv_" + kv.binding)}`);
+    }
+
+    const uniqueQueues = [...new Set((cfWorkers!.queues || []).map(q => q.name))];
+    for (const queueName of uniqueQueues) {
+      lines.push(`    Worker -->|send/receive| ${sanitize("queue_" + queueName)}`);
+    }
+
+    return lines;
+  }
 
   if (hasK8s) {
     // Kubernetes deployment
@@ -505,17 +950,24 @@ function generateDeploymentDiagram(
       lines.push(`            subgraph ns_${sanitize(ns)}["📁 Namespace: ${nsLabel}"]`);
 
       const nsDeployments = (k8s.deployments || []).filter((d) => (d.namespace || "default") === ns);
-      for (const dep of nsDeployments.slice(0, 5)) {
+      const shownDeps = limitSlice(nsDeployments, limits.k8sDeployments);
+      for (const dep of shownDeps) {
         const depLabel = sanitizeLabel(dep.name);
         const replicas = dep.replicas || 1;
         lines.push(`                ${sanitize("dep_" + dep.name)}["🚀 ${depLabel}<br/>${replicas} replicas"]`);
       }
+      if (nsDeployments.length > shownDeps.length) {
+        lines.push(`                dep_more_${sanitize(ns)}["+${nsDeployments.length - shownDeps.length} more deployments"]`);
+      }
 
-      const nsServices = (k8s.services || []).slice(0, 3);
+      const nsServices = limitSlice(k8s.services || [], limits.k8sServices);
       for (const svc of nsServices) {
         const svcLabel = sanitizeLabel(svc.name);
         const ports = svc.ports?.join(", ") || "80";
         lines.push(`                ${sanitize("svc_k8s_" + svc.name)}["🔌 ${svcLabel}<br/>Ports: ${ports}"]`);
+      }
+      if ((k8s.services || []).length > nsServices.length) {
+        lines.push(`                svc_more_${sanitize(ns)}["+${(k8s.services || []).length - nsServices.length} more services"]`);
       }
 
       lines.push("            end");
@@ -525,10 +977,14 @@ function generateDeploymentDiagram(
     const ingresses = k8s.ingresses || [];
     if (ingresses.length > 0) {
       lines.push('            subgraph Ingress["🌐 Ingress"]');
-      for (const ing of ingresses.slice(0, 3)) {
+      const shownIngresses = limitSlice(ingresses, limits.ingresses);
+      for (const ing of shownIngresses) {
         const ingLabel = sanitizeLabel(ing.name);
         const host = sanitizeLabel(ing.host || "/*");
         lines.push(`                ${sanitize("ing_" + ing.name)}["${ingLabel}<br/>${host}"]`);
+      }
+      if (ingresses.length > shownIngresses.length) {
+        lines.push(`                ing_more["+${ingresses.length - shownIngresses.length} more ingresses"]`);
       }
       lines.push("            end");
     }
@@ -696,6 +1152,10 @@ TWO MODES:
 1. Ecosystem overview - omit 'repo' param to see all repos
 2. Single-repo detail - pass 'repo' name for detailed internal view
 
+OPTIONS:
+- detailed: Set to true to show ALL elements without truncation (default: false)
+- export: Set to true to get export instructions for saving to file (default: false)
+
 IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to render.`,
     schema: {
       type: "object",
@@ -709,11 +1169,22 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
           enum: ["context", "container", "component", "dynamic", "deployment"],
           description: "C4 diagram type. Default: container",
         },
+        detailed: {
+          type: "boolean",
+          description: "Show ALL elements without truncation. Default: false",
+        },
+        export: {
+          type: "boolean",
+          description: "Include export instructions for saving diagram to file. Default: false",
+        },
       },
     },
     handler: async (args) => {
       const targetRepo = args.repo as string | undefined;
       const diagramType = args.type as string | undefined;
+      const detailed = args.detailed === true;
+      const shouldExport = args.export === true;
+      const limits = detailed ? NO_LIMITS : DEFAULT_LIMITS;
 
       // Validate repo name format if provided
       if (targetRepo !== undefined && !isValidRepoName(targetRepo)) {
@@ -759,44 +1230,59 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
         const monorepo = (await s.loadExtractor(targetRepo, refType, latest.ref, "monorepo")) as MonorepoData | null;
         const k8s = (await s.loadExtractor(targetRepo, refType, latest.ref, "kubernetes")) as K8sData | null;
         const terraform = (await s.loadExtractor(targetRepo, refType, latest.ref, "terraform")) as TerraformData | null;
+        const cfWorkers = (await s.loadExtractor(targetRepo, refType, latest.ref, "cloudflare_workers")) as CloudflareWorkersData | null;
 
         let lines: string[];
 
         switch (effectiveDiagramType) {
           case "context":
-            lines = generateContextDiagram(targetRepo, label, monorepo, dataFlow);
+            lines = generateContextDiagram(targetRepo, label, monorepo, dataFlow, cfWorkers, limits);
             break;
           case "component":
-            lines = generateComponentDiagram(targetRepo, label, tech, monorepo, userFlows, dataFlow);
+            lines = generateComponentDiagram(targetRepo, label, tech, monorepo, userFlows, dataFlow, cfWorkers, limits);
             break;
           case "dynamic":
-            lines = generateDynamicDiagram(targetRepo, label, monorepo, userFlows, dataFlow);
+            lines = generateDynamicDiagram(targetRepo, label, monorepo, userFlows, dataFlow, cfWorkers, limits);
             break;
           case "deployment":
-            lines = generateDeploymentDiagram(targetRepo, label, monorepo, k8s, terraform);
+            lines = generateDeploymentDiagram(targetRepo, label, monorepo, k8s, terraform, cfWorkers, limits);
             break;
           case "container":
           default:
-            lines = generateContainerDiagram(targetRepo, label, tech, monorepo, userFlows, dataFlow);
+            lines = generateContainerDiagram(targetRepo, label, tech, monorepo, userFlows, dataFlow, cfWorkers, limits);
             break;
         }
 
         const mermaid = lines.join("\n");
 
-        return safeJson({
+        const stats = {
+          packages: monorepo?.packages?.length || 0,
+          screens: userFlows?.screens?.length || 0,
+          services: dataFlow?.services?.length || 0,
+          k8sDeployments: k8s?.deployments?.length || 0,
+          cfWorkerEndpoints: cfWorkers?.endpoints?.length || 0,
+        };
+
+        const result: Record<string, unknown> = {
           repo: targetRepo,
           ref: latest.ref,
           type: effectiveDiagramType,
+          detailed,
           mermaid,
-          stats: {
-            packages: monorepo?.packages?.length || 0,
-            screens: userFlows?.screens?.length || 0,
-            services: dataFlow?.services?.length || 0,
-            k8sDeployments: k8s?.deployments?.length || 0,
-          },
+          stats,
           availableTypes: ["context", "container", "component", "dynamic", "deployment"],
           hint: "Display the 'mermaid' field in a ```mermaid code block to render visually",
-        });
+        };
+
+        if (shouldExport) {
+          const filename = `${targetRepo}-${effectiveDiagramType}.md`;
+          result.exportTo = {
+            suggestedPath: `docs/diagrams/${filename}`,
+            instruction: `Export this diagram by writing the mermaid content to a markdown file. The agent should save the following to docs/diagrams/${filename}:\n\n# ${label} - ${effectiveDiagramType.charAt(0).toUpperCase() + effectiveDiagramType.slice(1)} Diagram\n\n\`\`\`mermaid\n${mermaid}\n\`\`\``,
+          };
+        }
+
+        return safeJson(result);
       }
 
       // Ecosystem mode - supports context, container, deployment
@@ -839,13 +1325,14 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
 
           if (monorepo?.detected) {
             const apps = monorepo.apps || monorepo.packages?.filter((p) => p.type === "app") || [];
-            for (const pkg of apps.slice(0, 4)) {
+            const shownApps = limitSlice(apps, limits.appsPerRepo);
+            for (const pkg of shownApps) {
               const pkgLabel = sanitizeLabel(pkg.name);
               const pkgTech = sanitizeLabel(pkg.framework || tech);
               lines.push(`        ${sanitize(repo.name + "_" + pkg.name)}["🖥️ ${pkgLabel}<br/>${pkgTech}"]`);
             }
-            if (apps.length > 4) {
-              lines.push(`        ${sanitize(repo.name)}_more["+${apps.length - 4} more apps"]`);
+            if (apps.length > shownApps.length) {
+              lines.push(`        ${sanitize(repo.name)}_more["+${apps.length - shownApps.length} more apps"]`);
             }
           } else {
             lines.push(`        ${sanitize(repo.name)}_main["🖥️ ${repoLabel}<br/>${tech}"]`);
@@ -868,11 +1355,12 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
         }
 
       } else if (ecosystemType === "deployment") {
-        // Ecosystem Deployment: aggregate K8s/TF across all repos
+        // Ecosystem Deployment: aggregate K8s/TF/CF Workers across all repos
         lines = ["flowchart TB"];
 
         const allK8s: Array<{ repo: string; data: K8sData }> = [];
         const allTf: Array<{ repo: string; data: TerraformData }> = [];
+        const allCfWorkers: Array<{ repo: string; data: CloudflareWorkersData }> = [];
 
         for (const repo of mainRepos) {
           const versions = await s.listVersions(repo.name);
@@ -882,6 +1370,7 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
           const refType = latest.refType as "branch" | "tag";
           const k8s = (await s.loadExtractor(repo.name, refType, latest.ref, "kubernetes")) as K8sData | null;
           const tf = (await s.loadExtractor(repo.name, refType, latest.ref, "terraform")) as TerraformData | null;
+          const cfWorkers = (await s.loadExtractor(repo.name, refType, latest.ref, "cloudflare_workers")) as CloudflareWorkersData | null;
 
           if (k8s && ((k8s.deployments?.length || 0) > 0 || (k8s.services?.length || 0) > 0)) {
             allK8s.push({ repo: repo.name, data: k8s });
@@ -889,6 +1378,27 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
           if (tf && (tf.resources || 0) > 0) {
             allTf.push({ repo: repo.name, data: tf });
           }
+          if (cfWorkers?.name) {
+            allCfWorkers.push({ repo: repo.name, data: cfWorkers });
+          }
+        }
+
+        // Cloudflare Workers
+        if (allCfWorkers.length > 0) {
+          lines.push('    subgraph Cloudflare["☁️ Cloudflare Edge"]');
+          for (const { repo, data } of allCfWorkers) {
+            const repoLabel = sanitizeLabel(repo);
+            const route = data.routes?.[0]?.pattern || "";
+            const routeLabel = route ? `<br/>${sanitizeLabel(route)}` : "";
+            const hasKV = (data.kvNamespaces?.length || 0) > 0;
+            const hasDO = (data.durableObjects?.length || 0) > 0;
+            const hasQueues = (data.queues?.length || 0) > 0;
+            const services = [hasKV ? "KV" : "", hasDO ? "DO" : "", hasQueues ? "Queue" : ""].filter(Boolean).join(", ");
+            const servicesLabel = services ? `<br/>[${services}]` : "";
+            lines.push(`        ${sanitize(repo)}["⚡ ${repoLabel}${routeLabel}${servicesLabel}"]`);
+          }
+          lines.push("    end");
+          lines.push("");
         }
 
         if (allK8s.length > 0) {
@@ -897,9 +1407,13 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
           for (const { repo, data } of allK8s) {
             const repoLabel = sanitizeLabel(repo);
             lines.push(`        subgraph ${sanitize(repo)}_ns["📁 ${repoLabel}"]`);
-            for (const dep of (data.deployments || []).slice(0, 3)) {
+            const shownDeps = limitSlice(data.deployments || [], limits.k8sDeployments);
+            for (const dep of shownDeps) {
               const depLabel = sanitizeLabel(dep.name);
               lines.push(`            ${sanitize(repo + "_" + dep.name)}["🚀 ${depLabel}"]`);
+            }
+            if ((data.deployments || []).length > shownDeps.length) {
+              lines.push(`            ${sanitize(repo)}_more["+${(data.deployments || []).length - shownDeps.length} more"]`);
             }
             lines.push("        end");
           }
@@ -921,7 +1435,7 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
           lines.push("    end");
         }
 
-        if (allK8s.length === 0 && allTf.length === 0) {
+        if (allK8s.length === 0 && allTf.length === 0 && allCfWorkers.length === 0) {
           // No infra data - show generic deployment
           lines.push('    subgraph Cloud["☁️ Cloud"]');
           for (const repo of mainRepos) {
@@ -990,9 +1504,10 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
 
       const mermaid = lines.join("\n");
 
-      return safeJson({
+      const result: Record<string, unknown> = {
         mode: "ecosystem",
         type: ecosystemType,
+        detailed,
         mermaid,
         repos: mainRepos.map((r) => ({
           name: r.name,
@@ -1001,7 +1516,17 @@ IMPORTANT: Display the returned 'mermaid' field in a \`\`\`mermaid code block to
         availableTypes: ["context", "container", "deployment"],
         ecosystemNote: "component and dynamic types require a specific repo",
         hint: "For detailed view, call with repo='<name>'. Display 'mermaid' in a ```mermaid block.",
-      });
+      };
+
+      if (shouldExport) {
+        const filename = `ecosystem-${ecosystemType}.md`;
+        result.exportTo = {
+          suggestedPath: `docs/diagrams/${filename}`,
+          instruction: `Export this diagram by writing the mermaid content to a markdown file. The agent should save the following to docs/diagrams/${filename}:\n\n# Ecosystem - ${ecosystemType.charAt(0).toUpperCase() + ecosystemType.slice(1)} Diagram\n\n\`\`\`mermaid\n${mermaid}\n\`\`\``,
+        };
+      }
+
+      return safeJson(result);
     },
   },
   {
