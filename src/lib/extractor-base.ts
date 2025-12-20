@@ -2,7 +2,8 @@ import pLimit from "p-limit";
 import type { GitManager } from "./git-manager.js";
 
 // Concurrency limit for running extractors in parallel within a single repo
-const EXTRACTOR_CONCURRENCY = 6;
+// Can be overridden via ORGBRAIN_EXTRACTOR_CONCURRENCY env var
+const EXTRACTOR_CONCURRENCY = parseInt(process.env.ORGBRAIN_EXTRACTOR_CONCURRENCY || "8", 10);
 
 export interface ExtractionContext {
   repoName: string;

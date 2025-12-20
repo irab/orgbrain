@@ -6,13 +6,19 @@ import { KnowledgeStore } from "./knowledge-store.js";
 import "../extractors/index.js";
 
 // Concurrency limit for parallel repo extraction
-const REPO_CONCURRENCY = 4;
+// Can be overridden via ORGBRAIN_REPO_CONCURRENCY env var
+const REPO_CONCURRENCY = parseInt(process.env.ORGBRAIN_REPO_CONCURRENCY || "6", 10);
+
+// Higher concurrency for git fetches (network-bound, can run more in parallel)
+const GIT_FETCH_CONCURRENCY = parseInt(process.env.ORGBRAIN_GIT_FETCH_CONCURRENCY || "10", 10);
 
 export interface ExtractionOptions {
   repos?: string[];
   refs?: string[];
   force?: boolean;
   maxAgeSecs?: number;
+  /** Use shallow clones for faster fetching (only gets default branch tip, no tags/history) */
+  shallow?: boolean;
 }
 
 export interface ExtractionSummary {
@@ -59,44 +65,77 @@ export class ExtractionRunner {
       enabledRepos.push({ name: repoName, config: repoConfig });
     }
 
-    // Run repo extractions in parallel with concurrency limit
-    const limit = pLimit(REPO_CONCURRENCY);
-    console.log(`\n🚀 Extracting ${enabledRepos.length} repos (${REPO_CONCURRENCY} concurrent)...\n`);
-
-    const allSummaries = await Promise.all(
+    // Phase 1: Pre-fetch all repos in parallel (network-bound, higher concurrency)
+    const fetchLimit = pLimit(GIT_FETCH_CONCURRENCY);
+    const shallowMode = options.shallow ?? false;
+    console.log(`\n📥 Fetching ${enabledRepos.length} repos (${GIT_FETCH_CONCURRENCY} concurrent${shallowMode ? ', shallow' : ''})...`);
+    const fetchStart = Date.now();
+    
+    const repoPathMap = new Map<string, string>();
+    const fetchResults = await Promise.allSettled(
       enabledRepos.map(({ name, config: repoConfig }) =>
-        limit(() => this.runRepo(name, repoConfig, options))
+        fetchLimit(async () => {
+          try {
+            const path = await this.gitManager.ensureRepo(name, repoConfig.url, { shallow: shallowMode });
+            repoPathMap.set(name, path);
+            return { name, path, success: true };
+          } catch (error) {
+            console.error(`  ❌ Failed to fetch ${name}: ${error}`);
+            return { name, path: null, success: false, error };
+          }
+        })
       )
     );
+    
+    const fetchDuration = Date.now() - fetchStart;
+    const successfulFetches = fetchResults.filter(r => r.status === 'fulfilled' && r.value.success).length;
+    console.log(`✅ Fetched ${successfulFetches}/${enabledRepos.length} repos in ${fetchDuration}ms\n`);
+
+    // Phase 2: Run extractions in parallel (CPU-bound, lower concurrency)
+    const extractLimit = pLimit(REPO_CONCURRENCY);
+    console.log(`🚀 Extracting ${successfulFetches} repos (${REPO_CONCURRENCY} concurrent)...\n`);
+
+    const allSummaries = await Promise.all(
+      enabledRepos
+        .filter(({ name }) => repoPathMap.has(name))
+        .map(({ name, config: repoConfig }) =>
+          extractLimit(() => this.runRepoWithPath(name, repoConfig, repoPathMap.get(name)!, options))
+        )
+    );
+
+    // Add failed fetch results as summaries
+    for (const result of fetchResults) {
+      if (result.status === 'fulfilled' && !result.value.success) {
+        const repo = enabledRepos.find(r => r.name === result.value.name);
+        if (repo) {
+          allSummaries.push([{
+            repo: result.value.name,
+            ref: repo.config.default_branch,
+            refType: "branch",
+            extractors: [],
+            success: false,
+            error: String(result.value.error),
+            duration: 0,
+          }]);
+        }
+      }
+    }
 
     // Flatten the array of arrays
     return allSummaries.flat();
   }
 
-  async runRepo(
+  /**
+   * Run extraction for a repo that has already been fetched
+   */
+  async runRepoWithPath(
     repoName: string,
     repoConfig: RepoConfig,
+    repoPath: string,
     options: ExtractionOptions = {}
   ): Promise<ExtractionSummary[]> {
     const summaries: ExtractionSummary[] = [];
-
     console.log(`\n📦 Processing ${repoName}...`);
-
-    let repoPath: string;
-    try {
-      repoPath = await this.gitManager.ensureRepo(repoName, repoConfig.url);
-    } catch (error) {
-      console.error(`  ❌ Failed to clone/update repo: ${error}`);
-      return [{
-        repo: repoName,
-        ref: repoConfig.default_branch,
-        refType: "branch",
-        extractors: [],
-        success: false,
-        error: String(error),
-        duration: 0,
-      }];
-    }
 
     const refsToProcess: Array<{ type: "branch" | "tag"; name: string }> = [];
 
@@ -210,6 +249,34 @@ export class ExtractionRunner {
     }
 
     return summaries;
+  }
+
+  /**
+   * Run extraction for a single repo (fetches first if needed)
+   * Used by extract_ref tool for single-repo extraction
+   */
+  async runRepo(
+    repoName: string,
+    repoConfig: RepoConfig,
+    options: ExtractionOptions = {}
+  ): Promise<ExtractionSummary[]> {
+    let repoPath: string;
+    try {
+      repoPath = await this.gitManager.ensureRepo(repoName, repoConfig.url, { shallow: options.shallow });
+    } catch (error) {
+      console.error(`  ❌ Failed to clone/update repo: ${error}`);
+      return [{
+        repo: repoName,
+        ref: repoConfig.default_branch,
+        refType: "branch",
+        extractors: [],
+        success: false,
+        error: String(error),
+        duration: 0,
+      }];
+    }
+
+    return this.runRepoWithPath(repoName, repoConfig, repoPath, options);
   }
 
   getStore(): KnowledgeStore {

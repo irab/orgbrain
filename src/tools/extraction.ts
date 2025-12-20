@@ -4,6 +4,7 @@
 
 import { loadConfig, isRepoEnabled } from "../lib/config-loader.js";
 import { runExtractors } from "../lib/extractor-base.js";
+import { runExtraction } from "../lib/extraction-runner.js";
 import "../extractors/index.js"; // Register all extractors
 import { ToolHandler, safeJson, getStore, getGitManager } from "./shared.js";
 
@@ -291,7 +292,7 @@ export const extractionTools: ToolHandler[] = [
   {
     name: "extract_all",
     description:
-      "Extract knowledge from all enabled repos at their configured refs. Useful for initial setup or full refresh.",
+      "Extract knowledge from all enabled repos at their configured refs. Useful for initial setup or full refresh. Uses parallel fetching and extraction for speed.",
     schema: {
       type: "object",
       properties: {
@@ -303,10 +304,15 @@ export const extractionTools: ToolHandler[] = [
           type: "string",
           description: "Optional: limit to specific repos (comma-separated)",
         },
+        shallow: {
+          type: "boolean",
+          description: "Use shallow clones for faster fetching. Only gets default branch tip, no tags/history. (default: true)",
+        },
       },
     },
     handler: async (args) => {
       const force = Boolean(args.force) || false;
+      const shallow = args.shallow !== false; // Default to true for speed
       const reposFilter = args.repos as string | undefined;
 
       // Validate repos filter if provided
@@ -325,33 +331,12 @@ export const extractionTools: ToolHandler[] = [
         });
       }
 
-      let config;
-      try {
-        config = await loadConfig();
-      } catch (error) {
-        return safeJson({
-          error: "Failed to load config",
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-
-      const s = await getStore();
-      const gm = await getGitManager();
-
-      const results: Array<{
-        repo: string;
-        ref: string;
-        status: string;
-        extractors?: string[];
-        error?: string;
-      }> = [];
-
       // Parse and validate repo names if filter provided
-      let repoNames: string[];
+      let repos: string[] | undefined;
       if (reposFilter) {
-        repoNames = reposFilter.split(",").map((r) => r.trim()).filter((r) => r.length > 0);
+        repos = reposFilter.split(",").map((r) => r.trim()).filter((r) => r.length > 0);
         // Validate each repo name
-        for (const name of repoNames) {
+        for (const name of repos) {
           if (!isValidRepoName(name)) {
             return safeJson({
               error: `Invalid repository name: "${name}"`,
@@ -359,126 +344,40 @@ export const extractionTools: ToolHandler[] = [
             });
           }
         }
-      } else {
-        repoNames = Object.keys(config.repositories);
       }
 
-      for (const repoName of repoNames) {
-        const repoConfig = config.repositories[repoName];
-        if (!repoConfig) {
-          results.push({ repo: repoName, ref: "-", status: "not_found" });
-          continue;
-        }
+      try {
+        // Use the parallel extraction runner
+        const summaries = await runExtraction({
+          repos,
+          force,
+          shallow,
+        });
 
-        if (!isRepoEnabled(repoConfig)) {
-          results.push({ repo: repoName, ref: "-", status: "disabled" });
-          continue;
-        }
+        const results = summaries.map((s) => ({
+          repo: s.repo,
+          ref: s.ref,
+          status: s.success ? "extracted" : "error",
+          extractors: s.extractors.length > 0 ? s.extractors : undefined,
+          duration: s.duration,
+          error: s.error,
+        }));
 
-        const ref = repoConfig.default_branch || "main";
-
-        // Check cache
-        if (!force) {
-          const versions = await s.listVersions(repoName);
-          const existing = versions.find((v) => v.ref === ref);
-          if (existing) {
-            const ageMs = Date.now() - existing.extractedAt.getTime();
-            if (ageMs < 24 * 60 * 60 * 1000) {
-              results.push({
-                repo: repoName,
-                ref,
-                status: "cached",
-                extractors: (await s.load(repoName, existing.refType as "branch" | "tag", ref))?.manifest.extractors,
-              });
-              continue;
-            }
-          }
-        }
-
-        try {
-          // Use shallow clone for faster extraction (we only need current state)
-          const repoPath = await gm.ensureRepo(repoName, repoConfig.url, { shallow: true });
-          const files = await gm.listFilesAtRef(repoPath, ref);
-
-          // Auto-detect and add extractors based on actual file contents
-          let extractors = [...repoConfig.extractors];
-
-          // Auto-detect monorepo
-          const hasMonorepoExtractor = extractors.some((e) => e.name === "monorepo");
-          if (!hasMonorepoExtractor) {
-            const isMonorepo = files.some(
-              (f) =>
-                f === "turbo.json" ||
-                f === "pnpm-workspace.yaml" ||
-                f === "nx.json" ||
-                f === "lerna.json"
-            );
-            if (isMonorepo) {
-              extractors = [{ name: "monorepo" }, ...extractors];
-            }
-          }
-
-          // Auto-detect Terraform files
-          const hasTerraformExtractor = extractors.some((e) => e.name === "terraform");
-          if (!hasTerraformExtractor) {
-            const hasTerraform = files.some(
-              (f) => f.endsWith(".tf") || f.endsWith(".tfvars") || f.includes("terraform")
-            );
-            if (hasTerraform) {
-              extractors.push({ name: "terraform" });
-            }
-          }
-
-          // Auto-detect Kubernetes manifests
-          const hasKubernetesExtractor = extractors.some((e) => e.name === "kubernetes");
-          if (!hasKubernetesExtractor) {
-            const hasK8s = files.some(
-              (f) =>
-                f.includes("k8s/") ||
-                f.includes("kubernetes/") ||
-                f.includes("kube/") ||
-                f.includes("manifests/") ||
-                f.includes("helm/") ||
-                f.includes("charts/") ||
-                (f.endsWith(".yaml") && (f.includes("deploy") || f.includes("service") || f.includes("ingress")))
-            );
-            if (hasK8s) {
-              extractors.push({ name: "kubernetes" });
-            }
-          }
-
-          const extractResults = await runExtractors(
-            { repoName, repoPath, ref, refType: "branch", gitManager: gm },
-            extractors
-          );
-
-          await s.save(repoName, "branch", ref, extractResults);
-
-          results.push({
-            repo: repoName,
-            ref,
-            status: "extracted",
-            extractors: extractResults.map((r) => r.extractor),
-          });
-        } catch (error) {
-          results.push({
-            repo: repoName,
-            ref,
-            status: "error",
-            error: String(error),
-          });
-        }
+        return safeJson({
+          summary: {
+            total: results.length,
+            extracted: results.filter((r) => r.status === "extracted").length,
+            errors: results.filter((r) => r.status === "error").length,
+            totalDuration: summaries.reduce((sum, s) => sum + s.duration, 0),
+          },
+          results,
+        });
+      } catch (error) {
+        return safeJson({
+          error: "Extraction failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
       }
-
-      return safeJson({
-        summary: {
-          total: results.length,
-          extracted: results.filter((r) => r.status === "extracted").length,
-          cached: results.filter((r) => r.status === "cached").length,
-          errors: results.filter((r) => r.status === "error").length,
-        },
-        results,
-      });
     },
   },
 ];

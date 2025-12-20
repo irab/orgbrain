@@ -15,7 +15,7 @@ import { clearConfigCache } from "../lib/config-loader.js";
 import { createJob, getJob, updateJob, listJobs, listActiveJobs, type Job } from "../lib/job-manager.js";
 
 // Concurrency limit for parallel repo extraction in connect_org
-const REPO_CONCURRENCY = 4;
+const REPO_CONCURRENCY = parseInt(process.env.ORGBRAIN_REPO_CONCURRENCY || "6", 10);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
