@@ -28,7 +28,7 @@ export class GitManager {
     this.cacheDir = cacheDir;
   }
 
-  private async git(args: string[], cwd?: string): Promise<string> {
+  private async git(args: string[], cwd?: string, timeoutMs: number = 30000): Promise<string> {
     return new Promise((resolve, reject) => {
       const proc = spawn("git", args, {
         cwd: cwd || this.cacheDir,
@@ -38,15 +38,27 @@ export class GitManager {
       let stdout = "";
       let stderr = "";
 
+      // Set timeout to prevent hanging
+      const timeout = setTimeout(() => {
+        proc.kill("SIGTERM");
+        reject(new Error(`git ${args.join(" ")} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
       proc.stdout.on("data", (data) => (stdout += data.toString()));
       proc.stderr.on("data", (data) => (stderr += data.toString()));
 
       proc.on("close", (code) => {
+        clearTimeout(timeout);
         if (code === 0) {
           resolve(stdout.trim());
         } else {
-          reject(new Error(`git ${args.join(" ")} failed: ${stderr}`));
+          reject(new Error(`git ${args.join(" ")} failed: ${stderr || "unknown error"}`));
         }
+      });
+
+      proc.on("error", (error) => {
+        clearTimeout(timeout);
+        reject(new Error(`git ${args.join(" ")} spawn failed: ${error.message}`));
       });
     });
   }
@@ -55,7 +67,7 @@ export class GitManager {
     await fs.mkdir(this.cacheDir, { recursive: true });
   }
 
-  async ensureRepo(name: string, url: string, options: { shallow?: boolean; skipFetch?: boolean; forceFetch?: boolean } = {}): Promise<string> {
+  async ensureRepo(name: string, url: string, options: { shallow?: boolean; skipFetch?: boolean; forceFetch?: boolean; skipClone?: boolean } = {}): Promise<string> {
     const repoPath = join(this.cacheDir, name);
     const now = Date.now();
     const lastFetch = this.fetchCache.get(repoPath);
@@ -109,6 +121,10 @@ export class GitManager {
         this.fetchCache.set(repoPath, now);
       }
     } catch {
+      // If skipClone is true, don't clone - just throw error (for list_refs when repo doesn't exist)
+      if (options.skipClone) {
+        throw new Error(`Repository ${name} not found locally. Use extract_ref to clone and extract it first.`);
+      }
       // Clone the repo - use shallow clone for faster initial setup
       if (options.shallow) {
         await this.git(["clone", "--bare", "--depth", "1", url, name]);
@@ -124,7 +140,8 @@ export class GitManager {
   async listBranches(repoPath: string, options: { verify?: boolean } = {}): Promise<RepoVersion[]> {
     const output = await this.git(
       ["for-each-ref", "--format=%(refname:short)|%(objectname)|%(creatordate:iso8601)", "refs/heads"],
-      repoPath
+      repoPath,
+      10000 // 10 second timeout for listing branches
     );
 
     if (!output) return [];
@@ -188,7 +205,7 @@ export class GitManager {
       args.push("refs/tags");
     }
 
-    const output = await this.git(args, repoPath);
+    const output = await this.git(args, repoPath, 10000); // 10 second timeout for listing tags
 
     if (!output) return [];
 
@@ -336,16 +353,19 @@ export class GitManager {
     }
   }
 
-  async getRepoState(name: string, url: string, options: { skipFetch?: boolean; verify?: boolean } = {}): Promise<RepoState> {
-    const repoPath = await this.ensureRepo(name, url, { skipFetch: options.skipFetch });
+  async getRepoState(name: string, url: string, options: { skipFetch?: boolean; verify?: boolean; skipClone?: boolean } = {}): Promise<RepoState> {
+    const repoPath = await this.ensureRepo(name, url, { skipFetch: options.skipFetch, skipClone: options.skipClone });
     const branches = await this.listBranches(repoPath, { verify: options.verify });
     const tags = await this.listTags(repoPath);
 
     let currentRef = "unknown";
-    try {
-      currentRef = await this.git(["rev-parse", "HEAD"], repoPath);
-    } catch {
-      // ignore
+    // Skip HEAD resolution for list_refs (not needed and can be slow)
+    if (options.verify) {
+      try {
+        currentRef = await this.git(["rev-parse", "HEAD"], repoPath);
+      } catch {
+        // ignore
+      }
     }
 
     return {

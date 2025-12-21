@@ -33,11 +33,13 @@ export const queryTools: ToolHandler[] = [
       const result: Record<string, unknown> = {};
 
       // Process repos in parallel for better performance
-      // Use skipFetch=true to read from local cache only (only fetch if repo doesn't exist)
+      // Use skipFetch=true and verify=false to read from local cache only (fast, no verification)
       const repoEntries = Object.entries(config.repositories);
       const promises = repoEntries.map(async ([repoName, repoConfig]) => {
         try {
-          const state = await gm.getRepoState(repoName, repoConfig.url, { skipFetch: true });
+          // Skip verification and cloning for list_refs - we just want to list refs from local cache
+          // If repo doesn't exist, return error instead of cloning (which is slow)
+          const state = await gm.getRepoState(repoName, repoConfig.url, { skipFetch: true, verify: false, skipClone: true });
           return {
             repoName,
             data: {
