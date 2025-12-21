@@ -121,7 +121,7 @@ export class GitManager {
     return repoPath;
   }
 
-  async listBranches(repoPath: string): Promise<RepoVersion[]> {
+  async listBranches(repoPath: string, options: { verify?: boolean } = {}): Promise<RepoVersion[]> {
     const output = await this.git(
       ["for-each-ref", "--format=%(refname:short)|%(objectname)|%(creatordate:iso8601)", "refs/heads"],
       repoPath
@@ -129,7 +129,7 @@ export class GitManager {
 
     if (!output) return [];
 
-    // Map branches and verify/update SHA to ensure we have the latest commit
+    // Map branches
     const branches = output.split("\n").filter(Boolean).map((line) => {
       const [name, sha, dateStr] = line.split("|");
       return {
@@ -139,6 +139,11 @@ export class GitManager {
         date: new Date(dateStr),
       };
     });
+
+    // Only verify if explicitly requested (for extraction, not for listing)
+    if (!options.verify) {
+      return branches;
+    }
 
     // For each branch, verify the SHA is correct by resolving the ref directly
     // This ensures we get the actual commit the branch points to, not just what's in refs/heads
@@ -331,9 +336,9 @@ export class GitManager {
     }
   }
 
-  async getRepoState(name: string, url: string, options: { skipFetch?: boolean } = {}): Promise<RepoState> {
+  async getRepoState(name: string, url: string, options: { skipFetch?: boolean; verify?: boolean } = {}): Promise<RepoState> {
     const repoPath = await this.ensureRepo(name, url, { skipFetch: options.skipFetch });
-    const branches = await this.listBranches(repoPath);
+    const branches = await this.listBranches(repoPath, { verify: options.verify });
     const tags = await this.listTags(repoPath);
 
     let currentRef = "unknown";

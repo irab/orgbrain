@@ -160,7 +160,7 @@ export class ExtractionRunner {
     const refsToUse = Array.isArray(options.refs) ? options.refs : undefined;
     
     if (refsToUse?.length) {
-      const branches = await this.gitManager.listBranches(repoPath);
+      const branches = await this.gitManager.listBranches(repoPath, { verify: true });
       const tags = await this.gitManager.listTags(repoPath);
 
       for (const ref of refsToUse) {
@@ -190,7 +190,7 @@ export class ExtractionRunner {
       // Get current SHA for the ref to detect changes
       let currentSha: string | undefined;
       try {
-        const branches = await this.gitManager.listBranches(repoPath);
+        const branches = await this.gitManager.listBranches(repoPath, { verify: true });
         const tags = await this.gitManager.listTags(repoPath);
         const version = [...branches, ...tags].find((v) => v.name === name);
         currentSha = version?.sha;
@@ -243,7 +243,7 @@ export class ExtractionRunner {
         // Get SHA for this ref - try from branch/tag list first, then fallback to direct git lookup
         let sha: string | undefined;
         try {
-          const branches = await this.gitManager.listBranches(repoPath);
+          const branches = await this.gitManager.listBranches(repoPath, { verify: true });
           const tags = await this.gitManager.listTags(repoPath);
           const version = [...branches, ...tags].find((v) => v.name === name);
           sha = version?.sha;

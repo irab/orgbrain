@@ -179,7 +179,7 @@ export const extractionTools: ToolHandler[] = [
         const repoPath = await gm.ensureRepo(repoName, repoConfig.url, { forceFetch: true });
 
         // Determine ref type
-        const branches = await gm.listBranches(repoPath);
+        const branches = await gm.listBranches(repoPath, { verify: true });
         const tags = await gm.listTags(repoPath);
 
         const isBranch = branches.some((b) => b.name === ref);
