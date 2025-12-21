@@ -14,7 +14,7 @@ const GIT_FETCH_CONCURRENCY = parseInt(process.env.ORGBRAIN_GIT_FETCH_CONCURRENC
 
 export interface ExtractionOptions {
   repos?: string[];
-  refs?: string[];
+  refs?: string[] | Record<string, string[]>; // Can be array (applies to all) or object (per-repo)
   force?: boolean;
   maxAgeSecs?: number;
   /** Use shallow clones for faster fetching (only gets default branch tip, no tags/history) */
@@ -76,7 +76,7 @@ export class ExtractionRunner {
       enabledRepos.map(({ name, config: repoConfig }) =>
         fetchLimit(async () => {
           try {
-            const path = await this.gitManager.ensureRepo(name, repoConfig.url, { shallow: shallowMode });
+            const path = await this.gitManager.ensureRepo(name, repoConfig.url, { shallow: shallowMode, forceFetch: true });
             repoPathMap.set(name, path);
             return { name, path, success: true };
           } catch (error) {
@@ -95,12 +95,29 @@ export class ExtractionRunner {
     const extractLimit = pLimit(REPO_CONCURRENCY);
     console.log(`🚀 Extracting ${successfulFetches} repos (${REPO_CONCURRENCY} concurrent)...\n`);
 
+    // Determine per-repo refs if refs override is provided
+    const perRepoRefs: Record<string, string[]> = {};
+    if (options.refs) {
+      if (Array.isArray(options.refs)) {
+        // If refs is an array, apply to all repos
+        for (const { name } of enabledRepos) {
+          perRepoRefs[name] = options.refs;
+        }
+      } else {
+        // If refs is an object, use per-repo mapping
+        Object.assign(perRepoRefs, options.refs);
+      }
+    }
+
     const allSummaries = await Promise.all(
       enabledRepos
         .filter(({ name }) => repoPathMap.has(name))
-        .map(({ name, config: repoConfig }) =>
-          extractLimit(() => this.runRepoWithPath(name, repoConfig, repoPathMap.get(name)!, options))
-        )
+        .map(({ name, config: repoConfig }) => {
+          // Use per-repo refs if specified, otherwise use default from config
+          const repoRefs = perRepoRefs[name];
+          const repoOptions = repoRefs ? { ...options, refs: repoRefs } : options;
+          return extractLimit(() => this.runRepoWithPath(name, repoConfig, repoPathMap.get(name)!, repoOptions));
+        })
     );
 
     // Add failed fetch results as summaries
@@ -220,6 +237,7 @@ export class ExtractionRunner {
           extractors
         );
 
+        // Get SHA for this ref - try from branch/tag list first, then fallback to direct git lookup
         let sha: string | undefined;
         try {
           const branches = await this.gitManager.listBranches(repoPath);
@@ -228,6 +246,14 @@ export class ExtractionRunner {
           sha = version?.sha;
         } catch {
           // ignore
+        }
+        
+        // Fallback: get SHA directly from git if not found in list
+        if (!sha) {
+          const refSha = await this.gitManager.getRefSha(repoPath, name);
+          if (refSha) {
+            sha = refSha;
+          }
         }
 
         await this.store.save(repoName, type, name, results, sha);

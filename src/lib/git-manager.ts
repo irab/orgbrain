@@ -21,6 +21,8 @@ export interface RepoState {
 
 export class GitManager {
   private cacheDir: string;
+  private fetchCache: Map<string, number> = new Map(); // repoPath -> last fetch timestamp
+  private readonly FETCH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
   constructor(cacheDir: string) {
     this.cacheDir = cacheDir;
@@ -53,19 +55,58 @@ export class GitManager {
     await fs.mkdir(this.cacheDir, { recursive: true });
   }
 
-  async ensureRepo(name: string, url: string, options: { shallow?: boolean } = {}): Promise<string> {
+  async ensureRepo(name: string, url: string, options: { shallow?: boolean; skipFetch?: boolean; forceFetch?: boolean } = {}): Promise<string> {
     const repoPath = join(this.cacheDir, name);
+    const now = Date.now();
+    const lastFetch = this.fetchCache.get(repoPath);
+    // Skip fetch if explicitly requested OR (cache is fresh AND not forcing fetch)
+    const shouldSkipFetch = options.skipFetch || (!options.forceFetch && lastFetch && (now - lastFetch) < this.FETCH_CACHE_TTL_MS);
 
     try {
       await fs.access(repoPath);
-      // For shallow repos, just fetch the default branch; for full repos, fetch everything
-      if (options.shallow) {
-        // Explicitly update all branch refs from remote for bare repos
-        await this.git(["fetch", "--depth", "1", "origin", "+refs/heads/*:refs/heads/*"], repoPath);
-      } else {
-        // Fetch with explicit refspec to ensure branches are updated in bare repos
-        // Use origin explicitly rather than --all to ensure refspec applies correctly
-        await this.git(["fetch", "--prune", "--tags", "origin", "+refs/heads/*:refs/heads/*"], repoPath);
+      // Skip fetch if cached recently or explicitly requested
+      if (!shouldSkipFetch) {
+        // For shallow repos, just fetch the default branch; for full repos, fetch everything
+        if (options.shallow) {
+          // Explicitly update all branch refs from remote for bare repos
+          await this.git(["fetch", "--depth", "1", "origin", "+refs/heads/*:refs/heads/*"], repoPath);
+        } else {
+          // Fetch with explicit refspec to ensure branches are updated in bare repos
+          // The + prefix forces update even if not fast-forward
+          // This updates refs/heads/* to point to the latest commits from origin
+          await this.git(["fetch", "--prune", "--tags", "origin", "+refs/heads/*:refs/heads/*"], repoPath);
+        }
+        
+        // After fetching, sync any remote refs that weren't updated by the refspec
+        // This handles cases where refs might be stored under refs/remotes/origin/
+        try {
+          const remoteRefs = await this.git(["for-each-ref", "--format=%(refname)", "refs/remotes/origin/"], repoPath);
+          if (remoteRefs) {
+            for (const remoteRef of remoteRefs.split("\n").filter(Boolean)) {
+              // Skip HEAD ref
+              if (remoteRef.includes("/HEAD")) continue;
+              
+              // Extract branch name (e.g., refs/remotes/origin/main -> main)
+              const match = remoteRef.match(/refs\/remotes\/origin\/(.+)/);
+              if (!match) continue;
+              
+              const branchName = match[1];
+              const localRef = `refs/heads/${branchName}`;
+              
+              // Update local branch ref to point to the remote branch commit
+              try {
+                const remoteSha = await this.git(["rev-parse", remoteRef], repoPath);
+                await this.git(["update-ref", localRef, remoteSha], repoPath);
+              } catch {
+                // Ignore if we can't update this ref (might not exist locally)
+              }
+            }
+          }
+        } catch {
+          // If syncing fails, that's okay - the refspec should have handled it
+        }
+        
+        this.fetchCache.set(repoPath, now);
       }
     } catch {
       // Clone the repo - use shallow clone for faster initial setup
@@ -74,6 +115,7 @@ export class GitManager {
       } else {
         await this.git(["clone", "--bare", url, name]);
       }
+      this.fetchCache.set(repoPath, now);
     }
 
     return repoPath;
@@ -87,7 +129,8 @@ export class GitManager {
 
     if (!output) return [];
 
-    return output.split("\n").filter(Boolean).map((line) => {
+    // Map branches and verify/update SHA to ensure we have the latest commit
+    const branches = output.split("\n").filter(Boolean).map((line) => {
       const [name, sha, dateStr] = line.split("|");
       return {
         type: "branch" as const,
@@ -96,6 +139,35 @@ export class GitManager {
         date: new Date(dateStr),
       };
     });
+
+    // For each branch, verify the SHA is correct by resolving the ref directly
+    // This ensures we get the actual commit the branch points to, not just what's in refs/heads
+    const verifiedBranches = await Promise.all(
+      branches.map(async (branch) => {
+        try {
+          // Try to resolve the branch name directly (this will follow any symlinks or updated refs)
+          const resolvedSha = await this.git(["rev-parse", branch.name], repoPath);
+          if (resolvedSha && resolvedSha !== branch.sha) {
+            // If resolved SHA differs, get the commit date for the resolved commit
+            try {
+              const commitDate = await this.git(["show", "-s", "--format=%ci", resolvedSha], repoPath);
+              return {
+                ...branch,
+                sha: resolvedSha,
+                date: new Date(commitDate.trim()),
+              };
+            } catch {
+              return { ...branch, sha: resolvedSha };
+            }
+          }
+        } catch {
+          // If resolution fails, use the original branch info
+        }
+        return branch;
+      })
+    );
+
+    return verifiedBranches;
   }
 
   async listTags(repoPath: string, pattern?: string): Promise<RepoVersion[]> {
@@ -208,8 +280,59 @@ export class GitManager {
     await this.git(["worktree", "remove", "--force", worktreePath], repoPath);
   }
 
-  async getRepoState(name: string, url: string): Promise<RepoState> {
-    const repoPath = await this.ensureRepo(name, url);
+  async getCommitDate(repoPath: string, sha: string): Promise<Date | null> {
+    try {
+      // Use %cI for strict ISO 8601 format, or %ct for Unix timestamp
+      const output = await this.git(["show", "-s", "--format=%cI", sha], repoPath);
+      if (output) {
+        const dateStr = output.trim();
+        if (dateStr) {
+          return new Date(dateStr);
+        }
+      }
+      // Fallback to Unix timestamp if ISO format fails
+      const timestampOutput = await this.git(["show", "-s", "--format=%ct", sha], repoPath);
+      if (timestampOutput) {
+        const timestamp = parseInt(timestampOutput.trim(), 10);
+        if (!isNaN(timestamp)) {
+          return new Date(timestamp * 1000);
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  /**
+   * Get the SHA for a ref (branch or tag). Tries multiple strategies to find it.
+   */
+  async getRefSha(repoPath: string, ref: string): Promise<string | null> {
+    // Try direct ref first
+    try {
+      return await this.git(["rev-parse", ref], repoPath);
+    } catch {
+      // Try with origin/ prefix for remote branches
+      try {
+        return await this.git(["rev-parse", `origin/${ref}`], repoPath);
+      } catch {
+        // Try refs/heads/ prefix
+        try {
+          return await this.git(["rev-parse", `refs/heads/${ref}`], repoPath);
+        } catch {
+          // Try refs/tags/ prefix
+          try {
+            return await this.git(["rev-parse", `refs/tags/${ref}`], repoPath);
+          } catch {
+            return null;
+          }
+        }
+      }
+    }
+  }
+
+  async getRepoState(name: string, url: string, options: { skipFetch?: boolean } = {}): Promise<RepoState> {
+    const repoPath = await this.ensureRepo(name, url, { skipFetch: options.skipFetch });
     const branches = await this.listBranches(repoPath);
     const tags = await this.listTags(repoPath);
 

@@ -25,31 +25,45 @@ export const queryTools: ToolHandler[] = [
   },
   {
     name: "list_refs",
-    description: "List branches and tags (latest first) for each configured repo",
+    description: "List branches and tags for each configured repo from local cache. Tags are sorted by date (latest first), branches are unsorted. Only fetches from remote if repo doesn't exist locally.",
     schema: { type: "object", properties: {} },
     handler: async () => {
       const config = await loadConfig();
       const gm = await getGitManager();
       const result: Record<string, unknown> = {};
 
-      for (const [repoName, repoConfig] of Object.entries(config.repositories)) {
+      // Process repos in parallel for better performance
+      // Use skipFetch=true to read from local cache only (only fetch if repo doesn't exist)
+      const repoEntries = Object.entries(config.repositories);
+      const promises = repoEntries.map(async ([repoName, repoConfig]) => {
         try {
-          const state = await gm.getRepoState(repoName, repoConfig.url);
-          result[repoName] = {
-            branches: state.branches.slice(0, 10).map((b) => ({
-              name: b.name,
-              sha: b.sha.slice(0, 8),
-              date: b.date.toISOString(),
-            })),
-            tags: state.tags.slice(0, 10).map((t) => ({
-              name: t.name,
-              sha: t.sha.slice(0, 8),
-              date: t.date.toISOString(),
-            })),
+          const state = await gm.getRepoState(repoName, repoConfig.url, { skipFetch: true });
+          return {
+            repoName,
+            data: {
+              branches: state.branches.slice(0, 10).map((b) => ({
+                name: b.name,
+                sha: b.sha.slice(0, 8),
+                date: b.date.toISOString(),
+              })),
+              tags: state.tags.slice(0, 10).map((t) => ({
+                name: t.name,
+                sha: t.sha.slice(0, 8),
+                date: t.date.toISOString(),
+              })),
+            },
           };
         } catch (error) {
-          result[repoName] = { error: `Could not fetch refs: ${error}` };
+          return {
+            repoName,
+            data: { error: `Could not list refs: ${error}` },
+          };
         }
+      });
+
+      const results = await Promise.all(promises);
+      for (const { repoName, data } of results) {
+        result[repoName] = data;
       }
 
       return safeJson(result);

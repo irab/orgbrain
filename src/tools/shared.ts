@@ -87,9 +87,13 @@ export async function getEcosystemOverview(): Promise<{
     refType: string;
     extractedAt: string;
     extractors: string[];
+    sha?: string;
+    commitDate?: string;
   }>;
 }> {
   const s = await getStore();
+  const gm = await getGitManager();
+  const config = await loadConfig();
   const repos = await getEnabledExtractedRepos();
   const overview: Array<{
     name: string;
@@ -97,6 +101,8 @@ export async function getEcosystemOverview(): Promise<{
     refType: string;
     extractedAt: string;
     extractors: string[];
+    sha?: string;
+    commitDate?: string;
   }> = [];
 
   for (const repo of repos) {
@@ -107,13 +113,44 @@ export async function getEcosystemOverview(): Promise<{
           ? knowledge.manifest.extractedAt.toISOString()
           : String(knowledge.manifest.extractedAt);
 
-      overview.push({
+      const repoInfo: {
+        name: string;
+        ref: string;
+        refType: string;
+        extractedAt: string;
+        extractors: string[];
+        sha?: string;
+        commitDate?: string;
+      } = {
         name: repo,
         ref: knowledge.manifest.ref,
         refType: knowledge.manifest.refType,
         extractedAt,
         extractors: knowledge.manifest.extractors,
-      });
+      };
+
+      // Include commit SHA if available
+      if (knowledge.manifest.sha) {
+        repoInfo.sha = knowledge.manifest.sha;
+
+        // Get commit date/time from git
+        try {
+          const repoConfig = config.repositories[repo];
+          if (repoConfig) {
+            // Use skipFetch to avoid unnecessary network calls, but commit date should be available from local cache
+            const repoPath = await gm.ensureRepo(repo, repoConfig.url, { skipFetch: true });
+            const commitDate = await gm.getCommitDate(repoPath, knowledge.manifest.sha);
+            if (commitDate) {
+              repoInfo.commitDate = commitDate.toISOString();
+            }
+          }
+        } catch (error) {
+          // Log error for debugging but don't fail the whole operation
+          console.warn(`Failed to get commit date for ${repo}: ${error}`);
+        }
+      }
+
+      overview.push(repoInfo);
     }
   }
 

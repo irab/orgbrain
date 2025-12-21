@@ -175,8 +175,8 @@ export const extractionTools: ToolHandler[] = [
       }
 
       try {
-        // Ensure repo is cloned/updated
-        const repoPath = await gm.ensureRepo(repoName, repoConfig.url);
+        // Ensure repo is cloned/updated - force fetch to get latest commits
+        const repoPath = await gm.ensureRepo(repoName, repoConfig.url, { forceFetch: true });
 
         // Determine ref type
         const branches = await gm.listBranches(repoPath);
@@ -195,9 +195,20 @@ export const extractionTools: ToolHandler[] = [
 
         const refType: "branch" | "tag" = isBranch ? "branch" : "tag";
 
-        // Get SHA for this ref
+        // Get SHA for this ref - try from branch/tag list first, then fallback to direct git lookup
+        let sha: string | undefined;
         const refInfo = isBranch ? branches.find((b) => b.name === ref) : tags.find((t) => t.name === ref);
-        const sha = refInfo?.sha;
+        sha = refInfo?.sha;
+        
+        // Fallback: get SHA directly from git if not found in list
+        if (!sha) {
+          const refSha = await gm.getRefSha(repoPath, ref);
+          if (refSha) {
+            sha = refSha;
+          } else {
+            console.warn(`Could not determine SHA for ref ${ref} in ${repoName}`);
+          }
+        }
 
         // Auto-detect and add extractors based on actual file contents
         const files = await gm.listFilesAtRef(repoPath, ref);
@@ -292,7 +303,7 @@ export const extractionTools: ToolHandler[] = [
   {
     name: "extract_all",
     description:
-      "Extract knowledge from all enabled repos at their configured refs. Useful for initial setup or full refresh. Uses parallel fetching and extraction for speed.",
+      "Extract knowledge from all enabled repos at their configured refs. Useful for initial setup or full refresh. Uses parallel fetching and extraction for speed. Use 'refs' parameter to override branches for specific repos (e.g., extract all repos but use a different branch for one repo).",
     schema: {
       type: "object",
       properties: {
@@ -302,11 +313,15 @@ export const extractionTools: ToolHandler[] = [
         },
         repos: {
           type: "string",
-          description: "Optional: limit to specific repos (comma-separated)",
+          description: "Optional: limit to specific repos (comma-separated). Example: 'repo1,repo2'",
         },
         shallow: {
           type: "boolean",
           description: "Use shallow clones for faster fetching. Only gets default branch tip, no tags/history. (default: true)",
+        },
+        refs: {
+          type: "string",
+          description: "Optional: JSON string mapping repo names to branch/tag names to override. Only specified repos will use the override; others use their configured branches. Example: '{\"divine-iac-coreconfig\": \"feature/funnel-deployment\"}' or '{\"repo1\": \"main\", \"repo2\": \"develop\"}'",
         },
       },
     },
@@ -314,6 +329,7 @@ export const extractionTools: ToolHandler[] = [
       const force = Boolean(args.force) || false;
       const shallow = args.shallow !== false; // Default to true for speed
       const reposFilter = args.repos as string | undefined;
+      const refsOverride = args.refs as string | undefined;
 
       // Validate repos filter if provided
       if (reposFilter !== undefined && typeof reposFilter !== "string") {
@@ -346,12 +362,50 @@ export const extractionTools: ToolHandler[] = [
         }
       }
 
+      // Parse refs override if provided
+      let refsMap: Record<string, string[]> | undefined;
+      if (refsOverride) {
+        try {
+          const parsed = JSON.parse(refsOverride);
+          if (typeof parsed !== "object" || Array.isArray(parsed)) {
+            return safeJson({
+              error: "Invalid refs parameter",
+              message: "The 'refs' parameter must be a JSON object mapping repo names to branch/tag names.",
+            });
+          }
+          
+          // Convert to the format expected by ExtractionOptions
+          refsMap = {};
+          for (const [repoName, ref] of Object.entries(parsed)) {
+            if (!isValidRepoName(repoName)) {
+              return safeJson({
+                error: `Invalid repository name in refs: "${repoName}"`,
+                message: "Repository names must be 1-100 characters containing only alphanumeric characters, hyphens, underscores, and dots.",
+              });
+            }
+            if (typeof ref !== "string" || !isValidGitRef(ref)) {
+              return safeJson({
+                error: `Invalid ref for repo "${repoName}": "${ref}"`,
+                message: "Refs must be valid branch or tag names.",
+              });
+            }
+            refsMap[repoName] = [ref];
+          }
+        } catch (error) {
+          return safeJson({
+            error: "Invalid refs JSON",
+            message: `Failed to parse refs parameter: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }
+
       try {
         // Use the parallel extraction runner
         const summaries = await runExtraction({
           repos,
           force,
           shallow,
+          refs: refsMap,
         });
 
         const results = summaries.map((s) => ({

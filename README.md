@@ -418,7 +418,7 @@ Tools are registered in `src/index.ts` from multiple modules:
 
 ### Query Tools
 - `list_repos` - List repos with their latest extracted ref
-- `list_refs` - List branches and tags for each repo
+- `list_refs` - List branches and tags for each repo (tags sorted by date, branches unsorted)
 - `query_nips` - Aggregate NIP usage across repos
 - `query_flows` - Aggregate user flows/screens
 - `query_monorepos` - Aggregate monorepo structure
