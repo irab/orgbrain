@@ -60,9 +60,12 @@ export class GitManager {
       await fs.access(repoPath);
       // For shallow repos, just fetch the default branch; for full repos, fetch everything
       if (options.shallow) {
-        await this.git(["fetch", "--depth", "1", "origin"], repoPath);
+        // Explicitly update all branch refs from remote for bare repos
+        await this.git(["fetch", "--depth", "1", "origin", "+refs/heads/*:refs/heads/*"], repoPath);
       } else {
-        await this.git(["fetch", "--all", "--prune", "--tags"], repoPath);
+        // Fetch with explicit refspec to ensure branches are updated in bare repos
+        // Use origin explicitly rather than --all to ensure refspec applies correctly
+        await this.git(["fetch", "--prune", "--tags", "origin", "+refs/heads/*:refs/heads/*"], repoPath);
       }
     } catch {
       // Clone the repo - use shallow clone for faster initial setup

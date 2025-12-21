@@ -161,10 +161,16 @@ export class KnowledgeStore {
     repo: string,
     refType: "branch" | "tag",
     ref: string,
-    maxAgeMs: number = 24 * 60 * 60 * 1000
+    maxAgeMs: number = 24 * 60 * 60 * 1000,
+    currentSha?: string
   ): Promise<boolean> {
     const knowledge = await this.load(repo, refType, ref);
     if (!knowledge) return false;
+
+    // If current SHA is provided and differs from stored SHA, it's stale
+    if (currentSha && knowledge.manifest.sha && currentSha !== knowledge.manifest.sha) {
+      return false;
+    }
 
     const age = Date.now() - new Date(knowledge.manifest.extractedAt).getTime();
     return age < maxAgeMs;

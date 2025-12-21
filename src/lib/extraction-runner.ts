@@ -167,9 +167,20 @@ export class ExtractionRunner {
     }
 
     for (const { type, name } of refsToProcess) {
+      // Get current SHA for the ref to detect changes
+      let currentSha: string | undefined;
+      try {
+        const branches = await this.gitManager.listBranches(repoPath);
+        const tags = await this.gitManager.listTags(repoPath);
+        const version = [...branches, ...tags].find((v) => v.name === name);
+        currentSha = version?.sha;
+      } catch {
+        // ignore - will fall back to time-based freshness
+      }
+
       const maxAge = (options.maxAgeSecs || 86400) * 1000;
-      if (!options.force && await this.store.isFresh(repoName, type, name, maxAge)) {
-        console.log(`  ⏭️  Skipping ${type}:${name} (fresh)`);
+      if (!options.force && await this.store.isFresh(repoName, type, name, maxAge, currentSha)) {
+        console.log(`  ⏭️  Skipping ${type}:${name} (fresh, sha: ${currentSha?.slice(0, 7) || 'unknown'})`);
         continue;
       }
 
