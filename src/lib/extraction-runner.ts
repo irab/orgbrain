@@ -156,11 +156,14 @@ export class ExtractionRunner {
 
     const refsToProcess: Array<{ type: "branch" | "tag"; name: string }> = [];
 
-    if (options.refs?.length) {
+    // Handle refs override - can be array (applies to all) or object (per-repo, handled in runAll)
+    const refsToUse = Array.isArray(options.refs) ? options.refs : undefined;
+    
+    if (refsToUse?.length) {
       const branches = await this.gitManager.listBranches(repoPath);
       const tags = await this.gitManager.listTags(repoPath);
 
-      for (const ref of options.refs) {
+      for (const ref of refsToUse) {
         if (branches.find((b) => b.name === ref)) {
           refsToProcess.push({ type: "branch", name: ref });
         } else if (tags.find((t) => t.name === ref)) {
