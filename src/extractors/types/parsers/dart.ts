@@ -1,5 +1,13 @@
 /**
- * Dart Type Parser
+ * Dart Type Parser (Regex-based)
+ *
+ * NOTE: This parser uses regex instead of tree-sitter because there is no
+ * official tree-sitter-dart package available on npm. Community grammars exist
+ * (e.g., https://github.com/AUAboi/tree-sitter-dart) but would require manual
+ * building and distribution of native binaries.
+ *
+ * When an official tree-sitter-dart npm package becomes available, this parser
+ * should be migrated to use it for better accuracy and edge case handling.
  *
  * Extracts:
  * - class definitions with fields

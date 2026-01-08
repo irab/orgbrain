@@ -28,36 +28,54 @@ export class GitManager {
     this.cacheDir = cacheDir;
   }
 
-  private async git(args: string[], cwd?: string, timeoutMs: number = 30000): Promise<string> {
+  private async git(args: string[], cwd?: string, timeoutMs: number = 45000): Promise<string> {
     return new Promise((resolve, reject) => {
       const proc = spawn("git", args, {
         cwd: cwd || this.cacheDir,
         stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, GIT_SSH_COMMAND: "ssh -o BatchMode=yes -o StrictHostKeyChecking=no" }, // Prevent SSH prompts
       });
 
       let stdout = "";
       let stderr = "";
+      let resolved = false;
 
       // Set timeout to prevent hanging
       const timeout = setTimeout(() => {
+        if (resolved) return; // Already resolved/rejected
+        // Try SIGTERM first, then SIGKILL if it doesn't respond
         proc.kill("SIGTERM");
-        reject(new Error(`git ${args.join(" ")} timed out after ${timeoutMs}ms`));
+        const killTimeout = setTimeout(() => {
+          proc.kill("SIGKILL");
+        }, 2000);
+        proc.once("close", () => clearTimeout(killTimeout));
+        resolved = true;
+        reject(new Error(`git ${args.join(" ")} timed out after ${timeoutMs}ms${stderr ? `: ${stderr.slice(0, 200)}` : ""}`));
       }, timeoutMs);
 
+      // Ensure streams are readable to prevent hanging
+      proc.stdout.setEncoding("utf8");
+      proc.stderr.setEncoding("utf8");
+      
       proc.stdout.on("data", (data) => (stdout += data.toString()));
       proc.stderr.on("data", (data) => (stderr += data.toString()));
 
-      proc.on("close", (code) => {
+      proc.on("close", (code, signal) => {
+        if (resolved) return; // Already resolved/rejected
         clearTimeout(timeout);
+        resolved = true;
         if (code === 0) {
           resolve(stdout.trim());
         } else {
-          reject(new Error(`git ${args.join(" ")} failed: ${stderr || "unknown error"}`));
+          const errorMsg = stderr || stdout || "unknown error";
+          reject(new Error(`git ${args.join(" ")} failed${signal ? ` (killed by ${signal})` : ""}${code !== null ? ` (exit code ${code})` : ""}: ${errorMsg.slice(0, 500)}`));
         }
       });
 
       proc.on("error", (error) => {
+        if (resolved) return; // Already resolved/rejected
         clearTimeout(timeout);
+        resolved = true;
         reject(new Error(`git ${args.join(" ")} spawn failed: ${error.message}`));
       });
     });
@@ -74,8 +92,39 @@ export class GitManager {
     // Skip fetch if explicitly requested OR (cache is fresh AND not forcing fetch)
     const shouldSkipFetch = options.skipFetch || (!options.forceFetch && lastFetch && (now - lastFetch) < this.FETCH_CACHE_TTL_MS);
 
+    let repoExists = false;
+    let isValidRepo = false;
+
+    // Check if directory exists
     try {
       await fs.access(repoPath);
+      repoExists = true;
+      
+      // Verify it's a valid git repository by checking for git refs
+      try {
+        await this.git(["rev-parse", "--git-dir"], repoPath, 5000);
+        isValidRepo = true;
+      } catch {
+        // Directory exists but is not a valid git repo - need to remove and clone fresh
+        isValidRepo = false;
+      }
+    } catch {
+      // Directory doesn't exist - will clone
+      repoExists = false;
+    }
+
+    // If directory exists but is not a valid git repo, remove it and clone fresh
+    if (repoExists && !isValidRepo) {
+      console.log(`  ⚠️  Directory ${name} exists but is not a valid git repository. Removing and cloning fresh...`);
+      try {
+        await fs.rm(repoPath, { recursive: true, force: true });
+      } catch (error) {
+        throw new Error(`Failed to remove invalid repository directory ${name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      repoExists = false;
+    }
+
+    if (repoExists && isValidRepo) {
       // Skip fetch if cached recently or explicitly requested
       if (!shouldSkipFetch) {
         // For shallow repos, just fetch the default branch; for full repos, fetch everything
@@ -120,7 +169,7 @@ export class GitManager {
         
         this.fetchCache.set(repoPath, now);
       }
-    } catch {
+    } else {
       // If skipClone is true, don't clone - just throw error (for list_refs when repo doesn't exist)
       if (options.skipClone) {
         throw new Error(`Repository ${name} not found locally. Use extract_ref to clone and extract it first.`);
@@ -254,11 +303,14 @@ export class GitManager {
     repoPath: string,
     ref: string,
     pattern: string,
-    filePattern?: string
+    filePatterns?: string | string[]
   ): Promise<Array<{ file: string; line: number; content: string }>> {
     const args = ["grep", "-n", "-E", pattern, ref];
-    if (filePattern) {
-      args.push("--", filePattern);
+    if (filePatterns) {
+      args.push("--");
+      // Support both single pattern and array of patterns
+      const patterns = Array.isArray(filePatterns) ? filePatterns : [filePatterns];
+      args.push(...patterns);
     }
 
     try {

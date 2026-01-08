@@ -321,7 +321,7 @@ export const extractionTools: ToolHandler[] = [
         },
         refs: {
           type: "string",
-          description: "Optional: JSON string mapping repo names to branch/tag names to override. Only specified repos will use the override; others use their configured branches. Example: '{\"divine-iac-coreconfig\": \"feature/funnel-deployment\"}' or '{\"repo1\": \"main\", \"repo2\": \"develop\"}'",
+          description: "Optional: JSON string mapping repo names to branch/tag names to override. Only specified repos will use the override; others use their configured branches. Example: '{\"my-service\": \"feature/new-feature\"}' or '{\"repo1\": \"main\", \"repo2\": \"develop\"}'",
         },
       },
     },

@@ -120,6 +120,10 @@ export interface TypeDefinition {
   decorators?: string[];
   /** Documentation comment if present */
   doc?: string;
+  /** API type classification (if used in API routes) */
+  apiType?: "request" | "response";
+  /** Database schema type classification */
+  schemaType?: "model" | "table" | "entity";
 }
 
 // =============================================================================
@@ -167,6 +171,30 @@ export interface TypeModule {
 // Extraction Result
 // =============================================================================
 
+export interface CallDefinition {
+  /** Name of the calling function/method */
+  caller: string;
+  /** Name of the function/method being called */
+  callee: string;
+  /** Source file */
+  file: string;
+  /** Line number */
+  line: number;
+  /** Arguments passed (variable names or literal types if possible) */
+  args?: string[];
+}
+
+export interface EventType {
+  /** Event name */
+  name: string;
+  /** Type used as event payload */
+  payloadType?: string;
+  /** Source file */
+  file: string;
+  /** Line number */
+  line: number;
+}
+
 export interface TypeDefinitionsResult {
   /** All extracted types */
   types: TypeDefinition[];
@@ -174,8 +202,14 @@ export interface TypeDefinitionsResult {
   /** Computed relationships between types (for diagrams) */
   relationships: TypeRelationship[];
 
+  /** All extracted function/method calls for data flow analysis */
+  calls?: CallDefinition[];
+
   /** Types grouped by module/directory */
   modules: TypeModule[];
+
+  /** Event types extracted from event bus patterns */
+  eventTypes?: EventType[];
 
   /** Summary statistics */
   summary: {

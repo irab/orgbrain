@@ -91,6 +91,7 @@ export function parseDjangoModels(ctx: ParseContext): TypeDefinition[] {
       visibility: "public",
       fields,
       decorators: ["django", "orm"],
+      schemaType: "model",
     });
   }
 
@@ -194,6 +195,7 @@ export function parseSQLAlchemyModels(ctx: ParseContext): TypeDefinition[] {
       visibility: "public",
       fields,
       decorators: ["sqlalchemy", "orm"],
+      schemaType: "model",
     });
   }
 
@@ -286,6 +288,7 @@ export function parseGORMModels(ctx: ParseContext): TypeDefinition[] {
       visibility: name[0] === name[0].toUpperCase() ? "public" : "private",
       fields,
       decorators: ["gorm", "orm"],
+      schemaType: "model",
     });
   }
 
@@ -375,6 +378,7 @@ export function parseTypeORMEntities(ctx: ParseContext): TypeDefinition[] {
       visibility: "public",
       fields,
       decorators: ["typeorm", "orm", "entity"],
+      schemaType: "entity",
     });
   }
 
@@ -466,6 +470,7 @@ export function parseDrizzleSchemas(ctx: ParseContext): TypeDefinition[] {
       visibility: "public",
       fields,
       decorators: ["drizzle", "orm", tableName],
+      schemaType: "table",
     });
   }
 
@@ -587,6 +592,7 @@ export function parsePrismaTypes(ctx: ParseContext): TypeDefinition[] {
       visibility: "public",
       fields,
       decorators: ["prisma", "orm"],
+      schemaType: "model",
     });
   }
 

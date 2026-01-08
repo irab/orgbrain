@@ -15,7 +15,6 @@
 
 import type { TypeDefinition, FieldDefinition, VariantDefinition, TypeRef } from "../schema.js";
 import {
-  registerParser,
   type TypeParser,
   type ParseContext,
   getLineNumber,
@@ -332,5 +331,7 @@ const zodParser: TypeParser = {
 // Export but don't auto-register - it will be called from the TypeScript parser
 export { zodParser };
 export function parseZodSchemas(ctx: ParseContext): TypeDefinition[] {
-  return zodParser.parse(ctx);
+  const result = zodParser.parse(ctx);
+  // zodParser always returns TypeDefinition[], but handle both formats for type safety
+  return Array.isArray(result) ? result : result.types;
 }

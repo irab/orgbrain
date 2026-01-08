@@ -46,6 +46,13 @@ interface ServiceTopology {
   };
 }
 
+interface KustomizeImage {
+  name: string;
+  newName?: string;
+  newTag?: string;
+  digest?: string;
+}
+
 interface K8sData {
   resources: K8sResource[];
   argoApps: ArgoApp[];
@@ -57,6 +64,7 @@ interface K8sData {
     image: string;
     ports: number[];
     env: string[];
+    sourceRepo?: string; // Inferred from image name
   }>;
   configMaps: Array<{
     name: string;
@@ -69,6 +77,8 @@ interface K8sData {
     type: string;
     keys: string[];
   }>;
+  kustomizeImages: KustomizeImage[]; // Images from kustomization.yaml
+  imageToRepo: Record<string, string>; // image name -> inferred repo name
   namespaces: string[];
   topology: {
     nodes: Array<{ id: string; kind: string; namespace: string }>;
@@ -121,6 +131,8 @@ const kubernetesExtractor: Extractor = {
       deployments: [],
       configMaps: [],
       secrets: [],
+      kustomizeImages: [],
+      imageToRepo: {},
       namespaces: [],
       topology: {
         nodes: [],
@@ -153,6 +165,32 @@ const kubernetesExtractor: Extractor = {
       } catch {
         // Skip unreadable files
       }
+    }
+
+    // Parse kustomization.yaml files for image mappings
+    const kustomizeFiles = yamlFiles.filter((f) => 
+      f.endsWith("kustomization.yaml") || f.endsWith("kustomization.yml")
+    );
+    
+    for (const file of kustomizeFiles) {
+      try {
+        const content = await ctx.gitManager.getFileAtRef(ctx.repoPath, ctx.ref, file);
+        parseKustomization(file, content, data);
+      } catch {
+        // Skip unreadable files
+      }
+    }
+
+    // Build image -> repo mapping from kustomize images
+    buildImageToRepoMapping(data);
+
+    // Update deployments with source repo info
+    for (const deployment of data.deployments) {
+      // Try to match deployment name or image to a source repo
+      const imageName = deployment.image !== "unknown" ? deployment.image : deployment.name;
+      deployment.sourceRepo = data.imageToRepo[deployment.name] || 
+                              data.imageToRepo[imageName] ||
+                              inferRepoFromName(deployment.name);
     }
 
     // Build topology graph
@@ -390,6 +428,97 @@ function parseValue(value: string): unknown {
     return value.slice(1, -1);
   }
   return value;
+}
+
+/**
+ * Parse kustomization.yaml to extract image overrides
+ */
+function parseKustomization(file: string, content: string, data: K8sData): void {
+  const parsed = parseSimpleYaml(content);
+  
+  // Extract images array
+  const images = parsed.images as Array<Record<string, string>> | undefined;
+  if (images && Array.isArray(images)) {
+    for (const img of images) {
+      if (img.name || img.newName) {
+        data.kustomizeImages.push({
+          name: img.name || "",
+          newName: img.newName,
+          newTag: img.newTag,
+          digest: img.digest,
+        });
+      }
+    }
+  }
+  
+  // Also check for common patterns in the file using regex for better parsing
+  // Pattern: images:\n  - name: xxx\n    newName: yyy
+  const imageBlockMatch = content.match(/images:\s*\n((?:\s+-[^\n]+\n?(?:\s+\w+:[^\n]+\n?)*)+)/);
+  if (imageBlockMatch) {
+    const imageBlock = imageBlockMatch[1];
+    const imageEntries = imageBlock.split(/\n\s+-\s*/).filter(Boolean);
+    
+    for (const entry of imageEntries) {
+      const nameMatch = entry.match(/name:\s*([^\n\s]+)/);
+      const newNameMatch = entry.match(/newName:\s*([^\n\s]+)/);
+      const newTagMatch = entry.match(/newTag:\s*([^\n\s]+)/);
+      
+      if (nameMatch || newNameMatch) {
+        const imgDef: KustomizeImage = {
+          name: nameMatch?.[1] || "",
+          newName: newNameMatch?.[1],
+          newTag: newTagMatch?.[1],
+        };
+        
+        // Avoid duplicates
+        if (!data.kustomizeImages.some(i => i.name === imgDef.name && i.newName === imgDef.newName)) {
+          data.kustomizeImages.push(imgDef);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Build mapping from image names to likely source repo names
+ */
+function buildImageToRepoMapping(data: K8sData): void {
+  for (const img of data.kustomizeImages) {
+    const fullImage = img.newName || img.name;
+    if (!fullImage) continue;
+    
+    // Extract repo name from image path
+    // e.g., ghcr.io/divine-org/funnelcake-api -> funnelcake-api
+    // e.g., docker.io/myorg/keycast -> keycast
+    const parts = fullImage.split("/");
+    const imageName = parts[parts.length - 1].split(":")[0]; // Remove tag if present
+    
+    // Map various name forms
+    data.imageToRepo[img.name] = imageName;
+    data.imageToRepo[imageName] = imageName;
+    
+    // Also store the full image path for reference
+    if (img.newName) {
+      data.imageToRepo[img.newName] = imageName;
+    }
+  }
+}
+
+/**
+ * Infer source repo name from deployment/service name
+ */
+function inferRepoFromName(name: string): string {
+  // Remove common suffixes
+  let repoName = name
+    .replace(/-api$/, "")
+    .replace(/-relay$/, "")
+    .replace(/-worker$/, "")
+    .replace(/-service$/, "")
+    .replace(/-server$/, "")
+    .replace(/-web$/, "")
+    .replace(/-app$/, "");
+  
+  return repoName;
 }
 
 function buildTopologyGraph(data: K8sData): void {

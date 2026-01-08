@@ -5,7 +5,7 @@
  * Each parser handles extraction for one or more file extensions.
  */
 
-import type { TypeDefinition, Language } from "../schema.js";
+import type { TypeDefinition, Language, CallDefinition } from "../schema.js";
 
 // =============================================================================
 // Parser Interface
@@ -18,6 +18,13 @@ export interface ParseContext {
   file: string;
   /** Include private/internal types */
   includePrivate: boolean;
+  /** Optional TypeScript config (for TypeScript parsers) */
+  tsConfig?: {
+    /** Target ES version from tsconfig.json */
+    target?: string;
+    /** Whether strict mode is enabled */
+    strict?: boolean;
+  };
 }
 
 export interface TypeParser {
@@ -25,8 +32,8 @@ export interface TypeParser {
   language: Language;
   /** File extensions this parser handles (e.g., [".rs"]) */
   extensions: string[];
-  /** Parse types from file content */
-  parse(ctx: ParseContext): TypeDefinition[];
+  /** Parse types (and optionally calls) from file content */
+  parse(ctx: ParseContext): TypeDefinition[] | { types: TypeDefinition[]; calls?: CallDefinition[] };
 }
 
 // =============================================================================
@@ -263,7 +270,7 @@ export { parseORMModels } from "./orm.js";
 // Import parsers - they self-register via registerParser()
 // These must be imported AFTER the registry functions are defined
 import { rustParser } from "./rust.js";
-import { typescriptParser } from "./typescript.js";
+import { typescriptASTParser } from "./typescript-ast.js";
 import { dartParser } from "./dart.js";
 import { goParser } from "./go.js";
 import { pythonParser } from "./python.js";
@@ -271,7 +278,7 @@ import { protobufParser } from "./protobuf.js";
 
 // Explicitly register parsers to avoid ESM hoisting issues
 registerParser(rustParser);
-registerParser(typescriptParser);
+registerParser(typescriptASTParser); // Using AST-based parser instead of regex-based
 registerParser(dartParser);
 registerParser(goParser);
 registerParser(pythonParser);

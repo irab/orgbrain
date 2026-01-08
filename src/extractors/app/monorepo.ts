@@ -19,6 +19,9 @@ interface Package {
   dependencies: string[];      // Internal workspace dependencies
   devDependencies: string[];   // Internal workspace devDependencies
   scripts: string[];           // Available npm scripts
+  buildTools?: string[];       // Build tools detected
+  testFrameworks?: string[];   // Test frameworks detected
+  deploymentConfigs?: string[]; // Deployment configuration files
 }
 
 interface MonorepoData {
@@ -253,6 +256,50 @@ async function analyzePackage(
   // Get scripts
   const scripts = Object.keys(pkg.scripts as Record<string, string> || {});
 
+  // Detect build tools
+  const buildTools: string[] = [];
+  if (deps["webpack"] || deps["@webpack/cli"]) buildTools.push("webpack");
+  if (deps["vite"]) buildTools.push("vite");
+  if (deps["rollup"]) buildTools.push("rollup");
+  if (deps["esbuild"]) buildTools.push("esbuild");
+  if (deps["turbo"]) buildTools.push("turbo");
+  if (deps["nx"]) buildTools.push("nx");
+  if (allFiles.some((f) => f.startsWith(pkgPath) && f.includes("webpack.config"))) buildTools.push("webpack");
+  if (allFiles.some((f) => f.startsWith(pkgPath) && f.includes("vite.config"))) buildTools.push("vite");
+  if (allFiles.some((f) => f.startsWith(pkgPath) && f.includes("rollup.config"))) buildTools.push("rollup");
+
+  // Detect test frameworks
+  const testFrameworks: string[] = [];
+  if (deps["jest"] || deps["@jest/core"]) testFrameworks.push("jest");
+  if (deps["vitest"]) testFrameworks.push("vitest");
+  if (deps["mocha"]) testFrameworks.push("mocha");
+  if (deps["playwright"]) testFrameworks.push("playwright");
+  if (deps["@playwright/test"]) testFrameworks.push("playwright");
+  if (deps["cypress"]) testFrameworks.push("cypress");
+  if (deps["puppeteer"]) testFrameworks.push("puppeteer");
+  if (allFiles.some((f) => f.startsWith(pkgPath) && f.includes("jest.config"))) testFrameworks.push("jest");
+  if (allFiles.some((f) => f.startsWith(pkgPath) && f.includes("vitest.config"))) testFrameworks.push("vitest");
+  if (allFiles.some((f) => f.startsWith(pkgPath) && f.includes("playwright.config"))) testFrameworks.push("playwright");
+  if (allFiles.some((f) => f.startsWith(pkgPath) && f.includes("cypress.config"))) testFrameworks.push("cypress");
+
+  // Detect CI/CD configs
+  const ciConfigs: string[] = [];
+  if (allFiles.some((f) => f.startsWith(pkgPath) && f.includes(".github/workflows"))) ciConfigs.push("github-actions");
+  if (allFiles.some((f) => f.startsWith(pkgPath) && f.includes(".circleci"))) ciConfigs.push("circleci");
+  if (allFiles.some((f) => f.startsWith(pkgPath) && f.includes(".gitlab-ci"))) ciConfigs.push("gitlab-ci");
+  if (allFiles.some((f) => f.startsWith(pkgPath) && f.includes(".travis"))) ciConfigs.push("travis");
+
+  // Detect deployment configs
+  const deploymentConfigs: string[] = [];
+  const pkgFiles = allFiles.filter((f) => f.startsWith(pkgPath));
+  
+  if (pkgFiles.some((f) => f.includes("Dockerfile"))) deploymentConfigs.push("docker");
+  if (pkgFiles.some((f) => f.includes("docker-compose"))) deploymentConfigs.push("docker-compose");
+  if (pkgFiles.some((f) => f.includes("Chart.yaml") || f.includes("helm"))) deploymentConfigs.push("helm");
+  if (pkgFiles.some((f) => f.match(/\.ya?ml$/) && (f.includes("k8s") || f.includes("kubernetes")))) deploymentConfigs.push("kubernetes");
+  if (pkgFiles.some((f) => f.includes("serverless") || f.includes("sam.yaml"))) deploymentConfigs.push("serverless");
+  if (pkgFiles.some((f) => f.includes("terraform") || f.endsWith(".tf"))) deploymentConfigs.push("terraform");
+
   return {
     name,
     path: pkgPath,
@@ -262,6 +309,9 @@ async function analyzePackage(
     dependencies: internalDeps,
     devDependencies: internalDevDeps,
     scripts,
+    buildTools: buildTools.length > 0 ? buildTools : undefined,
+    testFrameworks: testFrameworks.length > 0 ? testFrameworks : undefined,
+    deploymentConfigs: deploymentConfigs.length > 0 ? deploymentConfigs : undefined,
   };
 }
 

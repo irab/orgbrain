@@ -531,4 +531,522 @@ Please check that your repos.yaml file exists and is valid YAML.`,
       };
     }
   );
+
+  // =============================================================================
+  // CodeGen AI Prompts - Help AI assistants generate better code
+  // =============================================================================
+
+  // Prepare context for code generation
+  server.prompt(
+    "codegen-prep",
+    "Gather all relevant type and pattern information before generating code",
+    {
+      feature: z.string().describe("Description of the feature to implement"),
+      repo: z.string().describe("Target repository for the new code"),
+    },
+    async ({ feature, repo }) => {
+      const sanitizedFeature = sanitizeInput(feature, 200);
+      const sanitizedRepo = sanitizeInput(repo, 100);
+
+      if (!sanitizedFeature) {
+        return {
+          messages: [
+            {
+              role: "user" as const,
+              content: {
+                type: "text" as const,
+                text: `⚠️ Please provide a feature description.`,
+              },
+            },
+          ],
+        };
+      }
+
+      if (!sanitizedRepo || !isValidRepoName(sanitizedRepo)) {
+        return {
+          messages: [
+            {
+              role: "user" as const,
+              content: {
+                type: "text" as const,
+                text: `⚠️ Invalid repository name: "${sanitizeInput(repo, 50)}". Repository names must be 1-100 characters containing only alphanumeric characters, hyphens, underscores, and dots.`,
+              },
+            },
+          ],
+        };
+      }
+
+      return {
+        messages: [
+          {
+            role: "user" as const,
+            content: {
+              type: "text" as const,
+              text: `Before generating code for "${sanitizedFeature}" in "${sanitizedRepo}", gather context:
+
+1. **Understand the target repo's patterns:**
+   - Call query_types(repo: "${sanitizedRepo}") to see existing type definitions
+   - Call query_type_relationships(repo: "${sanitizedRepo}") to understand the data model
+   - Note the naming conventions (PascalCase, snake_case, etc.)
+
+2. **Find similar implementations:**
+   - Call query_types(name: "<similar_feature_keyword>") to find related types across repos
+   - Look for patterns in field names, decorators, and inheritance
+
+3. **Check cross-repo contracts:**
+   - Call query_shared_types() to identify shared types this feature might need
+   - Call query_data_flow() to see if this interacts with external services
+
+4. **Understand the architecture:**
+   - Call generate_diagram(repo: "${sanitizedRepo}") to see module organization
+   - Identify where new code should be placed
+
+5. **Summarize for code generation:**
+   - List exact type definitions that should be extended/implemented
+   - List naming patterns to follow
+   - List module/file locations for new code
+   - List any shared contracts that must be maintained`,
+            },
+          },
+        ],
+      };
+    }
+  );
+
+  // Find implementation patterns for a feature
+  server.prompt(
+    "find-pattern",
+    "Find existing implementation patterns to guide new feature development",
+    {
+      pattern: z.string().describe("Type of pattern to find (e.g., 'bloc', 'repository', 'api-endpoint', 'form', 'screen')"),
+      repo: z.string().optional().describe("Optional: limit to specific repo"),
+    },
+    async ({ pattern, repo }) => {
+      const sanitizedPattern = sanitizeInput(pattern, 100);
+      const sanitizedRepo = repo ? sanitizeInput(repo, 100) : undefined;
+
+      if (!sanitizedPattern) {
+        return {
+          messages: [
+            {
+              role: "user" as const,
+              content: {
+                type: "text" as const,
+                text: `⚠️ Please provide a pattern name to search for.`,
+              },
+            },
+          ],
+        };
+      }
+
+      if (sanitizedRepo && !isValidRepoName(sanitizedRepo)) {
+        return {
+          messages: [
+            {
+              role: "user" as const,
+              content: {
+                type: "text" as const,
+                text: `⚠️ Invalid repository name: "${sanitizeInput(repo || "", 50)}".`,
+              },
+            },
+          ],
+        };
+      }
+
+      return {
+        messages: [
+          {
+            role: "user" as const,
+            content: {
+              type: "text" as const,
+              text: `Find existing "${sanitizedPattern}" patterns to guide implementation:
+
+1. **Search for pattern implementations:**
+   - Call query_types(name: "${sanitizedPattern}"${sanitizedRepo ? `, repo: "${sanitizedRepo}"` : ""})
+   - Look for classes/interfaces that match this pattern
+
+2. **Analyze the pattern structure:**
+   - For each found type, examine:
+     - What base class/interface does it extend?
+     - What fields are required?
+     - What decorators are used?
+     - What visibility modifiers are common?
+
+3. **Find related types:**
+   - Call query_type_relationships${sanitizedRepo ? `(repo: "${sanitizedRepo}")` : "()"}
+   - Filter to relationships involving the pattern types
+   - Identify common companions (e.g., Bloc → Event → State)
+
+4. **Document the pattern:**
+   - Required base types/interfaces
+   - Required fields and their types
+   - Common method signatures
+   - File/module location conventions
+   - Naming conventions
+
+5. **Provide a template:**
+   - Generate a code skeleton following the discovered pattern
+   - Include all required imports
+   - Add placeholder comments for customization`,
+            },
+          },
+        ],
+      };
+    }
+  );
+
+  // Verify type compatibility before generation
+  server.prompt(
+    "type-check",
+    "Verify that proposed types are compatible with existing contracts",
+    {
+      type_name: z.string().describe("Name of the type you're about to create"),
+      fields: z.string().describe("Comma-separated list of field names"),
+      repo: z.string().describe("Target repository"),
+    },
+    async ({ type_name, fields, repo }) => {
+      const sanitizedTypeName = sanitizeInput(type_name, 100);
+      const sanitizedFields = sanitizeInput(fields, 500);
+      const sanitizedRepo = sanitizeInput(repo, 100);
+
+      if (!sanitizedTypeName) {
+        return {
+          messages: [
+            {
+              role: "user" as const,
+              content: {
+                type: "text" as const,
+                text: `⚠️ Please provide a type name.`,
+              },
+            },
+          ],
+        };
+      }
+
+      if (!sanitizedRepo || !isValidRepoName(sanitizedRepo)) {
+        return {
+          messages: [
+            {
+              role: "user" as const,
+              content: {
+                type: "text" as const,
+                text: `⚠️ Invalid repository name: "${sanitizeInput(repo, 50)}".`,
+              },
+            },
+          ],
+        };
+      }
+
+      return {
+        messages: [
+          {
+            role: "user" as const,
+            content: {
+              type: "text" as const,
+              text: `Verify type compatibility for "${sanitizedTypeName}" with fields [${sanitizedFields}]:
+
+1. **Check for existing types with same name:**
+   - Call query_types(name: "${sanitizedTypeName}")
+   - If found in other repos, compare field names for consistency
+
+2. **Check for shared type contracts:**
+   - Call query_shared_types()
+   - Look for "${sanitizedTypeName}" in the results
+   - If this is a shared type, new implementation MUST match existing fields
+
+3. **Verify field name conventions:**
+   - Call query_types(repo: "${sanitizedRepo}", limit: 20)
+   - Check if field names follow the same conventions (camelCase, snake_case)
+   - Verify optional/required patterns
+
+4. **Check for related types:**
+   - For each proposed field type, verify it exists:
+     - Call query_types(name: "<field_type>", repo: "${sanitizedRepo}")
+   - If referencing types from other repos, verify they're shared contracts
+
+5. **Compatibility report:**
+   - ✅ List fields that match existing patterns
+   - ⚠️ List fields that differ from similar types (potential contract break)
+   - ❌ List fields that reference non-existent types
+   - Recommend adjustments if needed`,
+            },
+          },
+        ],
+      };
+    }
+  );
+
+  // Generate type-safe API client code
+  server.prompt(
+    "api-contract",
+    "Generate type-safe client code for an API based on shared types",
+    {
+      service_repo: z.string().describe("Repository containing the API/service"),
+      client_repo: z.string().describe("Repository where client code will be added"),
+    },
+    async ({ service_repo, client_repo }) => {
+      const sanitizedService = sanitizeInput(service_repo, 100);
+      const sanitizedClient = sanitizeInput(client_repo, 100);
+
+      if (!sanitizedService || !isValidRepoName(sanitizedService)) {
+        return {
+          messages: [
+            {
+              role: "user" as const,
+              content: {
+                type: "text" as const,
+                text: `⚠️ Invalid service repository name: "${sanitizeInput(service_repo, 50)}".`,
+              },
+            },
+          ],
+        };
+      }
+
+      if (!sanitizedClient || !isValidRepoName(sanitizedClient)) {
+        return {
+          messages: [
+            {
+              role: "user" as const,
+              content: {
+                type: "text" as const,
+                text: `⚠️ Invalid client repository name: "${sanitizeInput(client_repo, 50)}".`,
+              },
+            },
+          ],
+        };
+      }
+
+      return {
+        messages: [
+          {
+            role: "user" as const,
+            content: {
+              type: "text" as const,
+              text: `Generate type-safe client code for ${sanitizedService} API in ${sanitizedClient}:
+
+1. **Find API types in service repo:**
+   - Call query_types(repo: "${sanitizedService}")
+   - Filter for types with apiType: "request" or "response"
+   - Also look for types ending in Request, Response, Input, Output
+
+2. **Check existing shared contracts:**
+   - Call query_shared_types()
+   - Find types already shared between "${sanitizedService}" and "${sanitizedClient}"
+   - These are the "source of truth" - client must match exactly
+
+3. **Identify the data flow:**
+   - Call query_data_flow()
+   - Find API endpoints exposed by "${sanitizedService}"
+   - Note the HTTP methods, paths, and payload types
+
+4. **Generate client types:**
+   For each API type found:
+   - Generate the equivalent type in ${sanitizedClient}'s language
+   - Match field names EXACTLY (including casing)
+   - Match field types (convert between languages appropriately)
+   - Include documentation from source type
+
+5. **Generate client methods:**
+   - Create typed fetch/HTTP methods for each endpoint
+   - Use the generated request/response types
+   - Include error handling following ${sanitizedClient} patterns
+
+6. **Verify compatibility:**
+   - Call generate_type_flow_diagram(focusRepo: "${sanitizedService}")
+   - Show the type flow to verify correct contract usage`,
+            },
+          },
+        ],
+      };
+    }
+  );
+
+  // Safely extend an existing feature
+  server.prompt(
+    "extend-feature",
+    "Extend an existing feature while maintaining type safety and patterns",
+    {
+      existing_type: z.string().describe("Name of existing type/class to extend"),
+      new_capability: z.string().describe("Description of the new capability to add"),
+      repo: z.string().describe("Target repository"),
+    },
+    async ({ existing_type, new_capability, repo }) => {
+      const sanitizedType = sanitizeInput(existing_type, 100);
+      const sanitizedCapability = sanitizeInput(new_capability, 200);
+      const sanitizedRepo = sanitizeInput(repo, 100);
+
+      if (!sanitizedType) {
+        return {
+          messages: [
+            {
+              role: "user" as const,
+              content: {
+                type: "text" as const,
+                text: `⚠️ Please provide an existing type name to extend.`,
+              },
+            },
+          ],
+        };
+      }
+
+      if (!sanitizedCapability) {
+        return {
+          messages: [
+            {
+              role: "user" as const,
+              content: {
+                type: "text" as const,
+                text: `⚠️ Please describe the new capability to add.`,
+              },
+            },
+          ],
+        };
+      }
+
+      if (!sanitizedRepo || !isValidRepoName(sanitizedRepo)) {
+        return {
+          messages: [
+            {
+              role: "user" as const,
+              content: {
+                type: "text" as const,
+                text: `⚠️ Invalid repository name: "${sanitizeInput(repo, 50)}".`,
+              },
+            },
+          ],
+        };
+      }
+
+      return {
+        messages: [
+          {
+            role: "user" as const,
+            content: {
+              type: "text" as const,
+              text: `Extend "${sanitizedType}" to add "${sanitizedCapability}":
+
+1. **Understand the existing type:**
+   - Call query_types(name: "${sanitizedType}", repo: "${sanitizedRepo}")
+   - Document all existing fields and their types
+   - Note the visibility, decorators, and base types
+
+2. **Find all usages and relationships:**
+   - Call query_type_relationships(repo: "${sanitizedRepo}", type: "${sanitizedType}")
+   - Identify types that:
+     - Extend this type (would inherit new fields)
+     - Contain this type (might need updates)
+     - Are contained by this type (dependencies)
+
+3. **Check cross-repo impact:**
+   - Call query_shared_types()
+   - If "${sanitizedType}" is shared, changes affect other repos!
+   - List all repos that would be impacted
+
+4. **Find similar extensions:**
+   - Look for types with similar capabilities in the codebase
+   - Use their patterns for the new capability
+
+5. **Plan the extension:**
+   - New fields to add (with exact types)
+   - New methods to add (with signatures)
+   - Changes to existing code (if any)
+   - Breaking changes (if any) and migration path
+
+6. **Generate the code:**
+   - Extend "${sanitizedType}" following existing patterns
+   - Update any dependent types if needed
+   - Add tests following existing test patterns`,
+            },
+          },
+        ],
+      };
+    }
+  );
+
+  // Plan and execute a refactor that affects multiple repositories
+  server.prompt(
+    "cross-repo-refactor",
+    "Plan a refactor that affects multiple repositories",
+    {
+      type_name: z.string().describe("Name of the type to refactor"),
+      change: z.string().describe("Description of the change (e.g., 'rename field userId to authorId')"),
+    },
+    async ({ type_name, change }) => {
+      const sanitizedType = sanitizeInput(type_name, 100);
+      const sanitizedChange = sanitizeInput(change, 200);
+
+      if (!sanitizedType) {
+        return {
+          messages: [
+            {
+              role: "user" as const,
+              content: {
+                type: "text" as const,
+                text: `⚠️ Please provide a type name to refactor.`,
+              },
+            },
+          ],
+        };
+      }
+
+      if (!sanitizedChange) {
+        return {
+          messages: [
+            {
+              role: "user" as const,
+              content: {
+                type: "text" as const,
+                text: `⚠️ Please describe the change to make.`,
+              },
+            },
+          ],
+        };
+      }
+
+      return {
+        messages: [
+          {
+            role: "user" as const,
+            content: {
+              type: "text" as const,
+              text: `Plan cross-repo refactor: ${sanitizedChange} for "${sanitizedType}":
+
+1. **Find all instances of this type:**
+   - Call query_types(name: "${sanitizedType}")
+   - List every repo where this type exists
+   - Note the language and exact definition in each
+
+2. **Analyze the contract:**
+   - Call query_shared_types(minSimilarity: 80)
+   - Find "${sanitizedType}" in results
+   - Calculate the current similarity score
+   - List shared fields that must stay in sync
+
+3. **Map the impact:**
+   - Call generate_type_flow_diagram()
+   - Visualize all repos connected by this type
+   - Identify the "source of truth" repo
+
+4. **Create refactor plan:**
+   For each affected repo, list:
+   - Files that need changes
+   - Exact changes needed (old → new)
+   - Order of changes (source first, then consumers)
+
+5. **Generate migration steps:**
+   - Step 1: Update source repo type definition
+   - Step 2: Update each consumer repo's definition
+   - Step 3: Update all usages in each repo
+   - Include rollback plan
+
+6. **Verify after refactor:**
+   - Call query_shared_types() again
+   - Confirm similarity score is still high
+   - Generate updated type flow diagram`,
+            },
+          },
+        ],
+      };
+    }
+  );
 }

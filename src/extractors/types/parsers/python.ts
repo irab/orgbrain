@@ -1,5 +1,5 @@
 /**
- * Python Type Parser
+ * Python Type Parser (Tree-sitter)
  *
  * Extracts:
  * - dataclass definitions
@@ -12,122 +12,237 @@
  */
 
 import type { TypeDefinition, FieldDefinition, VariantDefinition, TypeRef } from "../schema.js";
+import type { TypeParser, ParseContext } from "./index.js";
 import {
-  type TypeParser,
-  type ParseContext,
-  getLineNumber,
+  parseSource,
+  findNodesOfType,
+  findFirstNodeOfType,
+  getChildByFieldName,
+  getChildrenOfType,
+  getNodeText,
+  getNodeLine,
   parseTypeRef,
-} from "./index.js";
+  parsePythonVisibility,
+  extractPythonDecorators,
+} from "./tree-sitter-utils.js";
+import type Parser from "tree-sitter";
 
-function parseClassBody(content: string, classIndent: number): FieldDefinition[] {
+// =============================================================================
+// Field Parsing
+// =============================================================================
+
+/**
+ * Parse fields from a class body block.
+ */
+function parseClassFields(blockNode: Parser.SyntaxNode): FieldDefinition[] {
   const fields: FieldDefinition[] = [];
-  const lines = content.split("\n");
 
-  for (const line of lines) {
-    // Calculate indentation
-    const indentMatch = line.match(/^(\s*)/);
-    const indent = indentMatch ? indentMatch[1].length : 0;
+  // Look for expression_statements containing assignments with type annotations
+  const exprStatements = getChildrenOfType(blockNode, "expression_statement");
 
-    // Skip if not at class body level (one indent deeper than class)
-    if (indent <= classIndent) break;
+  for (const stmt of exprStatements) {
+    const assignment = findFirstNodeOfType(stmt, "assignment");
+    if (!assignment) continue;
 
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("def ") || trimmed.startsWith("@")) {
-      continue;
-    }
+    // Check if this is a typed assignment (has a type annotation)
+    const typeNode = findFirstNodeOfType(assignment, "type");
+    if (!typeNode) continue;
 
-    // Pattern: name: Type or name: Type = default
-    const fieldMatch = trimmed.match(/^(\w+)\s*:\s*([^=]+?)(?:\s*=.*)?$/);
-    if (fieldMatch) {
-      const name = fieldMatch[1];
-      const typeStr = fieldMatch[2].trim();
+    // Get the field name (first identifier in the assignment)
+    const nameNode = findFirstNodeOfType(assignment, "identifier");
+    if (!nameNode) continue;
 
-      // Skip if name is a dunder or method-like
-      if (name.startsWith("_") && name.endsWith("_")) continue;
+    const name = getNodeText(nameNode);
 
-      const parsed = parseTypeRef(typeStr);
-      fields.push({
-        name,
-        typeRef: {
-          name: parsed.name,
-          generics: parsed.generics?.map((g) => ({ name: g.name, raw: g.raw })),
-          optional: parsed.optional || typeStr.includes("Optional"),
-          isCollection: parsed.isCollection,
-          raw: typeStr,
-        },
-        optional: typeStr.includes("Optional") || typeStr.includes("| None"),
-        visibility: name.startsWith("_") ? "private" : "public",
-      });
-    }
+    // Skip dunder methods and class-level constants
+    if (name.startsWith("__") && name.endsWith("__")) continue;
+
+    const typeText = getNodeText(typeNode);
+    const parsed = parseTypeRef(typeText);
+
+    // Check if there's a default value
+    const hasDefault = assignment.children.some((c) => c.type === "=");
+
+    fields.push({
+      name,
+      typeRef: {
+        name: parsed.name,
+        generics: parsed.generics,
+        optional: parsed.optional || typeText.includes("Optional") || typeText.includes("| None"),
+        isCollection: parsed.isCollection,
+        raw: typeText,
+      },
+      optional: typeText.includes("Optional") || typeText.includes("| None") || hasDefault,
+      visibility: parsePythonVisibility(name),
+    });
   }
 
   return fields;
 }
 
-function parseEnumBody(content: string, classIndent: number): VariantDefinition[] {
+/**
+ * Parse enum variants from a class body block.
+ */
+function parseEnumVariants(blockNode: Parser.SyntaxNode): VariantDefinition[] {
   const variants: VariantDefinition[] = [];
-  const lines = content.split("\n");
 
-  for (const line of lines) {
-    const indentMatch = line.match(/^(\s*)/);
-    const indent = indentMatch ? indentMatch[1].length : 0;
+  const exprStatements = getChildrenOfType(blockNode, "expression_statement");
 
-    if (indent <= classIndent) break;
+  for (const stmt of exprStatements) {
+    const assignment = findFirstNodeOfType(stmt, "assignment");
+    if (!assignment) continue;
 
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("def ") || trimmed.startsWith("@")) {
-      continue;
-    }
+    // Get the variant name
+    const nameNode = findFirstNodeOfType(assignment, "identifier");
+    if (!nameNode) continue;
 
-    // Pattern: NAME = "value" or NAME = 123 or NAME = auto()
-    const variantMatch = trimmed.match(/^([A-Z_][A-Z0-9_]*)\s*=\s*(.+)$/);
-    if (variantMatch) {
-      const variant: VariantDefinition = { name: variantMatch[1] };
-      const value = variantMatch[2].trim();
+    const name = getNodeText(nameNode);
 
-      if (value.startsWith('"') || value.startsWith("'")) {
-        variant.value = value.slice(1, -1);
-      } else if (/^\d+$/.test(value)) {
-        variant.value = parseInt(value, 10);
+    // Skip non-uppercase names (likely not enum values)
+    if (name !== name.toUpperCase() && !name.match(/^[A-Z][A-Z0-9_]*$/)) continue;
+
+    const variant: VariantDefinition = { name };
+
+    // Try to get the value
+    const valueNode = assignment.children.find(
+      (c) => c.type === "string" || c.type === "integer" || c.type === "float"
+    );
+
+    if (valueNode) {
+      if (valueNode.type === "string") {
+        // Extract string content
+        const stringContent = findFirstNodeOfType(valueNode, "string_content");
+        if (stringContent) {
+          variant.value = getNodeText(stringContent);
+        }
+      } else if (valueNode.type === "integer") {
+        variant.value = parseInt(getNodeText(valueNode), 10);
       }
-      // auto() and other complex values are left without a value
-
-      variants.push(variant);
     }
+
+    variants.push(variant);
   }
 
   return variants;
 }
 
-function extractDocstring(content: string, classEndIndex: number): string | undefined {
-  const after = content.slice(classEndIndex);
-  // Look for docstring right after class definition
-  const docMatch = after.match(/^\s*:\s*\n\s*("""(.+?)"""|'''(.+?)''')/s);
-  if (docMatch) {
-    return (docMatch[2] || docMatch[3])?.trim();
-  }
-  return undefined;
+// =============================================================================
+// Docstring Extraction
+// =============================================================================
+
+/**
+ * Extract docstring from a class body.
+ */
+function extractDocstring(blockNode: Parser.SyntaxNode): string | undefined {
+  // The first expression_statement in a block might be a docstring
+  const firstStmt = blockNode.children.find((c) => c.type === "expression_statement");
+  if (!firstStmt) return undefined;
+
+  const stringNode = findFirstNodeOfType(firstStmt, "string");
+  if (!stringNode) return undefined;
+
+  // Check if it's a triple-quoted string (docstring)
+  const stringStart = findFirstNodeOfType(stringNode, "string_start");
+  if (!stringStart) return undefined;
+
+  const startText = getNodeText(stringStart);
+  if (!startText.startsWith('"""') && !startText.startsWith("'''")) return undefined;
+
+  const stringContent = findFirstNodeOfType(stringNode, "string_content");
+  if (!stringContent) return undefined;
+
+  return getNodeText(stringContent).trim();
 }
 
-function extractDecorators(content: string, index: number): string[] {
-  const decorators: string[] = [];
-  const before = content.slice(0, index);
-  const lines = before.split("\n").reverse();
+// =============================================================================
+// Base Class Parsing
+// =============================================================================
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("@")) {
-      const match = trimmed.match(/@(\w+)/);
-      if (match) decorators.push(match[1]);
-    } else if (trimmed === "" || trimmed.startsWith("#")) {
-      continue;
-    } else {
-      break;
-    }
+/**
+ * Extract base classes from a class definition.
+ */
+function extractBaseClasses(classNode: Parser.SyntaxNode): string[] {
+  const argList = findFirstNodeOfType(classNode, "argument_list");
+  if (!argList) return [];
+
+  const bases: string[] = [];
+  const identifiers = findNodesOfType(argList, "identifier");
+
+  for (const id of identifiers) {
+    bases.push(getNodeText(id));
   }
 
-  return decorators.reverse();
+  return bases;
 }
+
+/**
+ * Determine the type kind based on decorators and base classes.
+ */
+function determineTypeKind(
+  decorators: string[],
+  bases: string[]
+): { kind: TypeDefinition["kind"]; isEnum: boolean } {
+  // Check decorators
+  if (decorators.includes("dataclass") || decorators.includes("define")) {
+    return { kind: "struct", isEnum: false };
+  }
+
+  // Check base classes
+  const baseSet = new Set(bases);
+
+  if (baseSet.has("TypedDict")) {
+    return { kind: "struct", isEnum: false };
+  }
+  if (baseSet.has("NamedTuple")) {
+    return { kind: "struct", isEnum: false };
+  }
+  if (baseSet.has("BaseModel")) {
+    return { kind: "struct", isEnum: false }; // Pydantic
+  }
+  if (baseSet.has("Protocol")) {
+    return { kind: "protocol", isEnum: false };
+  }
+  if (
+    baseSet.has("Enum") ||
+    baseSet.has("IntEnum") ||
+    baseSet.has("StrEnum") ||
+    baseSet.has("Flag") ||
+    baseSet.has("IntFlag")
+  ) {
+    return { kind: "enum", isEnum: true };
+  }
+
+  return { kind: "class", isEnum: false };
+}
+
+/**
+ * Filter base classes to get extends types (exclude special bases).
+ */
+function getExtendsTypes(bases: string[]): TypeRef[] | undefined {
+  const specialBases = new Set([
+    "TypedDict",
+    "NamedTuple",
+    "BaseModel",
+    "Protocol",
+    "Enum",
+    "IntEnum",
+    "StrEnum",
+    "Flag",
+    "IntFlag",
+    "ABC",
+    "object",
+  ]);
+
+  const extendsTypes = bases
+    .filter((b) => !specialBases.has(b))
+    .map((b) => ({ name: b, raw: b }));
+
+  return extendsTypes.length > 0 ? extendsTypes : undefined;
+}
+
+// =============================================================================
+// Main Parser
+// =============================================================================
 
 const pythonParser: TypeParser = {
   language: "python",
@@ -137,51 +252,55 @@ const pythonParser: TypeParser = {
     const types: TypeDefinition[] = [];
     const { content, file, includePrivate } = ctx;
 
-    // Match class definitions
-    const classPattern = /^(\s*)class\s+(\w+)(?:\(([^)]*)\))?:/gm;
-    let match;
+    let tree;
+    try {
+      tree = parseSource("python", content);
+    } catch (error) {
+      console.warn(`Failed to parse Python file ${file}:`, error);
+      return [];
+    }
 
-    while ((match = classPattern.exec(content)) !== null) {
-      const indent = match[1].length;
-      const name = match[2];
-      const bases = match[3]?.split(",").map((b) => b.trim()).filter(Boolean) || [];
+    const rootNode = tree.rootNode;
 
-      // Determine visibility (Python convention: _ prefix = private)
-      const visibility = name.startsWith("_") ? "private" : "public";
+    // Find all class definitions
+    // We need to avoid duplicates - decorated classes appear both as class_definition
+    // and inside decorated_definition. We track which ones we've seen.
+    const classNodes: Parser.SyntaxNode[] = [];
+    const seenNodes = new Set<number>();
+
+    // Find all class_definition nodes
+    const allClassDefs = findNodesOfType(rootNode, "class_definition");
+    
+    for (const classDef of allClassDefs) {
+      // Skip if we've already processed this node
+      if (seenNodes.has(classDef.id)) continue;
+      seenNodes.add(classDef.id);
+      classNodes.push(classDef);
+    }
+
+    // Process each class
+    for (const classNode of classNodes) {
+      const nameNode = findFirstNodeOfType(classNode, "identifier");
+      if (!nameNode) continue;
+
+      const name = getNodeText(nameNode);
+      const visibility = parsePythonVisibility(name);
+
       if (!includePrivate && visibility === "private") continue;
 
-      const line = getLineNumber(content, match.index);
-      const decorators = extractDecorators(content, match.index);
-      const afterClass = content.slice(match.index + match[0].length);
-      const doc = extractDocstring(content, match.index + match[0].length);
+      const line = getNodeLine(classNode);
 
-      // Determine type kind based on decorators and base classes
-      let kind: TypeDefinition["kind"] = "class";
-      let isEnum = false;
+      // Get decorators
+      const decorators = extractPythonDecorators(classNode);
 
-      if (decorators.includes("dataclass") || decorators.includes("define")) {
-        kind = "struct"; // Treat dataclass as struct-like
-      } else if (bases.some((b) => b.includes("TypedDict"))) {
-        kind = "struct";
-      } else if (bases.some((b) => b.includes("NamedTuple"))) {
-        kind = "struct";
-      } else if (bases.some((b) => b.includes("BaseModel"))) {
-        kind = "struct"; // Pydantic model
-      } else if (bases.some((b) => b.includes("Protocol"))) {
-        kind = "protocol";
-      } else if (bases.some((b) => ["Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"].some((e) => b.includes(e)))) {
-        kind = "enum";
-        isEnum = true;
-      }
+      // Get base classes
+      const bases = extractBaseClasses(classNode);
 
-      // Parse extends (filter out special base classes)
-      const specialBases = ["TypedDict", "NamedTuple", "BaseModel", "Protocol", "Enum", "IntEnum", "StrEnum", "Flag", "ABC"];
-      const extendsTypes = bases
-        .filter((b) => !specialBases.some((s) => b.includes(s)))
-        .map((b) => {
-          const parsed = parseTypeRef(b);
-          return { name: parsed.name, raw: b } as TypeRef;
-        });
+      // Determine type kind
+      const { kind, isEnum } = determineTypeKind(decorators, bases);
+
+      // Get the block (class body)
+      const blockNode = findFirstNodeOfType(classNode, "block");
 
       const typeDef: TypeDefinition = {
         name,
@@ -191,14 +310,22 @@ const pythonParser: TypeParser = {
         language: "python",
         visibility,
         decorators: decorators.length > 0 ? decorators : undefined,
-        extends: extendsTypes.length > 0 ? extendsTypes : undefined,
-        doc,
+        extends: getExtendsTypes(bases),
       };
 
-      if (isEnum) {
-        typeDef.variants = parseEnumBody(afterClass, indent);
-      } else {
-        typeDef.fields = parseClassBody(afterClass, indent);
+      if (blockNode) {
+        // Extract docstring
+        typeDef.doc = extractDocstring(blockNode);
+
+        // Extract fields or variants
+        if (isEnum) {
+          typeDef.variants = parseEnumVariants(blockNode);
+        } else {
+          const fields = parseClassFields(blockNode);
+          if (fields.length > 0) {
+            typeDef.fields = fields;
+          }
+        }
       }
 
       types.push(typeDef);
@@ -209,4 +336,3 @@ const pythonParser: TypeParser = {
 };
 
 export { pythonParser };
-

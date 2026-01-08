@@ -148,6 +148,12 @@ function buildRepoConfig(repo: GHRepo, options: { includeNips?: boolean } = {}):
 
   extractors.push({ name: "monorepo" });
 
+  // Add type_definitions for languages that support it
+  const typeDefinitionLanguages = ["TypeScript", "JavaScript", "Rust", "Python", "Go", "Dart"];
+  if (repo.primaryLanguage && typeDefinitionLanguages.includes(repo.primaryLanguage.name)) {
+    extractors.push({ name: "type_definitions" });
+  }
+
   if (repoType === "frontend") {
     extractors.push({ name: "user_flows" });
     extractors.push({ name: "data_flow" });
@@ -466,6 +472,15 @@ async function runConnectOrg(job: Job, options: ConnectOrgOptions): Promise<void
           );
           if (hasK8s) {
             extractors.push({ name: "kubernetes" });
+          }
+        }
+
+        // Auto-detect Cloudflare Workers
+        const hasCloudflareWorkersExtractor = extractors.some((e) => e.name === "cloudflare_workers");
+        if (!hasCloudflareWorkersExtractor) {
+          const hasWorkers = files.some((f) => f === "wrangler.toml" || f.endsWith("/wrangler.toml"));
+          if (hasWorkers) {
+            extractors.push({ name: "cloudflare_workers" });
           }
         }
 

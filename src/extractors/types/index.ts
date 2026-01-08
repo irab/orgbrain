@@ -18,6 +18,8 @@ import type {
   TypeModule,
   TypeDefinitionsResult,
   RelationshipKind,
+  CallDefinition,
+  EventType,
 } from "./schema.js";
 import { getParserForFile, supportedExtensions, parseZodSchemas, parseORMModels } from "./parsers/index.js";
 
@@ -267,8 +269,25 @@ const typeDefinitionsExtractor: Extractor = {
 
     sourceFiles = sourceFiles.slice(0, limit);
 
+    // Detect TypeScript version/config once per repo (for TypeScript files)
+    const { detectTypeScriptVersion, readTsConfig } = await import("./parsers/typescript-version.js");
+    let tsConfig: { target?: string; strict?: boolean } | undefined;
+    let tsVersion: string | undefined;
+    
+    const hasTypeScriptFiles = sourceFiles.some((f) => f.endsWith(".ts") || f.endsWith(".tsx"));
+    if (hasTypeScriptFiles) {
+      try {
+        tsConfig = await readTsConfig(ctx.repoPath, ctx.ref, ctx.gitManager);
+        tsVersion = await detectTypeScriptVersion(ctx.repoPath, ctx.ref, ctx.gitManager);
+      } catch {
+        // Version detection failed, continue with defaults
+      }
+    }
+
     // Extract types from all files
     const types: TypeDefinition[] = [];
+    const calls: CallDefinition[] = [];
+    const eventTypes: EventType[] = [];
 
     for (const file of sourceFiles) {
       const parser = getParserForFile(file);
@@ -276,11 +295,30 @@ const typeDefinitionsExtractor: Extractor = {
 
       try {
         const content = await ctx.gitManager.getFileAtRef(ctx.repoPath, ctx.ref, file);
-        const parseCtx = { content, file, includePrivate };
+        const parseCtx: { content: string; file: string; includePrivate: boolean; tsConfig?: { target?: string; strict?: boolean } } = { 
+          content, 
+          file, 
+          includePrivate 
+        };
+        
+        // For TypeScript files, pass version info if available
+        if ((file.endsWith(".ts") || file.endsWith(".tsx")) && tsConfig) {
+          parseCtx.tsConfig = {
+            target: tsConfig.target,
+            strict: tsConfig.strict,
+          };
+        }
 
         // Run the primary language parser
-        const extracted = parser.parse(parseCtx);
-        types.push(...extracted);
+        const result = parser.parse(parseCtx);
+        if (Array.isArray(result)) {
+          types.push(...result);
+        } else {
+          types.push(...result.types);
+          if (result.calls) {
+            calls.push(...result.calls);
+          }
+        }
 
         // Run supplementary parsers for applicable files
 
@@ -293,6 +331,12 @@ const typeDefinitionsExtractor: Extractor = {
         // ORM models (various languages)
         const ormTypes = parseORMModels(parseCtx);
         types.push(...ormTypes);
+
+        // Extract event types
+        if (file.endsWith(".ts") || file.endsWith(".tsx") || file.endsWith(".js") || file.endsWith(".jsx")) {
+          const events = extractEventTypes(parseCtx);
+          eventTypes.push(...events);
+        }
       } catch {
         // Skip unreadable files
       }
@@ -303,10 +347,16 @@ const typeDefinitionsExtractor: Extractor = {
     const modules = buildModules(types, relationships);
     const summary = buildSummary(types, relationships, modules);
 
+    // Identify API types (cross-reference with data_flow extractor if available)
+    // This is a best-effort identification based on naming patterns
+    identifyAPITypes(types);
+
     const data: TypeDefinitionsResult = {
       types,
       relationships,
+      calls: calls.length > 0 ? calls : undefined,
       modules,
+      eventTypes: eventTypes.length > 0 ? eventTypes : undefined,
       summary,
     };
 
@@ -319,6 +369,101 @@ const typeDefinitionsExtractor: Extractor = {
     };
   },
 };
+
+/**
+ * Identify API types based on naming patterns and usage
+ */
+function identifyAPITypes(types: TypeDefinition[]): void {
+  const typeNames = new Set(types.map((t) => t.name));
+  
+  for (const type of types) {
+    // Request types: ends with Request, Input, Create*, Update*, etc.
+    if (
+      type.name.endsWith("Request") ||
+      type.name.endsWith("Input") ||
+      type.name.match(/^(Create|Update|Delete|Patch)/) ||
+      type.name.match(/Request$/)
+    ) {
+      type.apiType = "request";
+    }
+    
+    // Response types: ends with Response, Output, *Result, etc.
+    if (
+      type.name.endsWith("Response") ||
+      type.name.endsWith("Output") ||
+      type.name.endsWith("Result") ||
+      type.name.match(/Response$/)
+    ) {
+      type.apiType = "response";
+    }
+  }
+}
+
+/**
+ * Extract event types from event bus patterns
+ */
+function extractEventTypes(ctx: { content: string; file: string }): EventType[] {
+  const events: EventType[] = [];
+  const { content, file } = ctx;
+  
+  // Pattern: eventBus.emit('eventName', payload)
+  const emitPattern = /(?:eventBus|eventEmitter|bus)\.emit\s*\(\s*['"]([^'"]+)['"]/gi;
+  let match: RegExpExecArray | null;
+  while ((match = emitPattern.exec(content)) !== null) {
+    const line = getLineNumber(content, match.index);
+    const eventName = match[1];
+    
+    // Try to find payload type from next argument
+    const afterMatch = content.slice(match.index, match.index + 500);
+    const payloadMatch = afterMatch.match(/,\s*(\w+)/);
+    
+    events.push({
+      name: eventName,
+      payloadType: payloadMatch ? payloadMatch[1] : undefined,
+      file,
+      line,
+    });
+  }
+  
+  // Pattern: publish('eventName', payload)
+  const publishPattern = /\.publish\s*\(\s*['"]([^'"]+)['"]/gi;
+  while ((match = publishPattern.exec(content)) !== null) {
+    const line = getLineNumber(content, match.index);
+    const eventName = match[1];
+    
+    const afterMatch = content.slice(match.index, match.index + 500);
+    const payloadMatch = afterMatch.match(/,\s*(\w+)/);
+    
+    events.push({
+      name: eventName,
+      payloadType: payloadMatch ? payloadMatch[1] : undefined,
+      file,
+      line,
+    });
+  }
+  
+  // Pattern: send({ type: 'eventName', ... })
+  const sendPattern = /\.send\s*\(\s*\{[^}]*type\s*:\s*['"]([^'"]+)['"]/gi;
+  while ((match = sendPattern.exec(content)) !== null) {
+    const line = getLineNumber(content, match.index);
+    const eventName = match[1];
+    
+    events.push({
+      name: eventName,
+      file,
+      line,
+    });
+  }
+  
+  return events;
+}
+
+/**
+ * Get line number from character index
+ */
+function getLineNumber(content: string, index: number): number {
+  return content.slice(0, index).split("\n").length;
+}
 
 registerExtractor(typeDefinitionsExtractor);
 export { typeDefinitionsExtractor };

@@ -1,7 +1,7 @@
 import pLimit from "p-limit";
 import { GitManager } from "./git-manager.js";
 import { loadConfig, isRepoEnabled, type RepoConfig } from "./config-loader.js";
-import { runExtractors, type ExtractionResult } from "./extractor-base.js";
+import { runExtractors, listExtractors, type ExtractionResult } from "./extractor-base.js";
 import { KnowledgeStore } from "./knowledge-store.js";
 import "../extractors/index.js";
 
@@ -208,26 +208,19 @@ export class ExtractionRunner {
       const startTime = Date.now();
 
       try {
-        // Auto-detect monorepo and add extractor if not already configured
-        let extractors = [...repoConfig.extractors];
-        const hasMonorepoExtractor = extractors.some((e) => e.name === "monorepo");
+        // Auto-detect all extractors: use all registered extractors
+        // Each extractor's canExtract() will determine if it should run
+        // Config extractors can still be used to provide custom config options
+        const allExtractors = listExtractors();
+        const configExtractorMap = new Map(
+          (repoConfig.extractors || []).map((e) => [e.name, e.config || {}])
+        );
         
-        if (!hasMonorepoExtractor) {
-          const files = await this.gitManager.listFilesAtRef(repoPath, name);
-          const isMonorepo = files.some((f) =>
-            f === "turbo.json" ||
-            f === "pnpm-workspace.yaml" ||
-            f === "nx.json" ||
-            f === "lerna.json" ||
-            f.match(/^packages\/[^/]+\/package\.json$/) ||
-            f.match(/^apps\/[^/]+\/package\.json$/)
-          );
-          
-          if (isMonorepo) {
-            console.log(`  📦 Auto-detected monorepo structure`);
-            extractors = [{ name: "monorepo" }, ...extractors];
-          }
-        }
+        // Build extractor configs: all registered extractors, with config from repos.yaml if available
+        const extractors = allExtractors.map((ext) => ({
+          name: ext.name,
+          config: configExtractorMap.get(ext.name) || {},
+        }));
 
         const results = await runExtractors(
           {
